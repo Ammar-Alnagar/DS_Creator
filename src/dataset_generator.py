@@ -54,7 +54,42 @@ class MedicalDatasetGenerator:
             processing_time_seconds=0.0,
             models_used=[]
         )
+        self.stop_event: Optional[asyncio.Event] = None
     
+    def set_stop_event(self, stop_event: asyncio.Event):
+        """Set the event used to signal a stop request."""
+        self.stop_event = stop_event
+        # Also pass to AI manager if it needs to be aware of stops during its own long operations
+        if hasattr(self.ai_manager, 'set_stop_event'):
+            self.ai_manager.set_stop_event(stop_event)
+
+    async def _early_exit(self, conversations: List[DatasetEntry], output_filename: Optional[str], start_time: datetime) -> Path:
+        """Handle early exit due to stop request or error."""
+        logger.info("Generation process is exiting early.")
+        
+        # Update final stats for partial generation
+        self.stats.total_conversations_generated = len(conversations)
+        if conversations:
+            confidence_scores = [conv.metadata.get('confidence_score', 0.0) for conv in conversations if conv.metadata]
+            if confidence_scores:
+                 self.stats.average_confidence_score = sum(confidence_scores) / len(confidence_scores)
+            else:
+                self.stats.average_confidence_score = 0.0
+        
+        end_time = datetime.now()
+        self.stats.processing_time_seconds = (end_time - start_time).total_seconds()
+        
+        # Save whatever was generated so far
+        if not output_filename:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"medical_conversations_partial_{timestamp}.json"
+            
+        output_path = await self._save_dataset(conversations, output_filename)
+        
+        self._log_generation_stats()
+        logger.info(f"Partial dataset saved to: {output_path}")
+        return output_path
+
     async def generate_dataset(
         self, 
         input_dir: Optional[Path] = None,
@@ -103,7 +138,14 @@ class MedicalDatasetGenerator:
             for pdf_name, chunks in pdf_chunks.items():
                 logger.info(f"Processing chunks from {pdf_name}")
                 
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info("Stop requested during PDF processing, halting generation.")
+                    return await self._early_exit(all_conversations, output_filename, start_time)
+
                 for chunk in chunks:
+                    if self.stop_event and self.stop_event.is_set():
+                        logger.info("Stop requested during chunk processing, halting generation.")
+                        return await self._early_exit(all_conversations, output_filename, start_time)
                     try:
                         # Generate conversations for this chunk
                         conversations = await self.ai_manager.generate_conversations(
@@ -132,7 +174,10 @@ class MedicalDatasetGenerator:
                         
                         # Add delay to respect API rate limits
                         await asyncio.sleep(0.1)
-                        
+                        if self.stop_event and self.stop_event.is_set():
+                            logger.info("Stop requested after API call/delay, halting generation.")
+                            return await self._early_exit(all_conversations, output_filename, start_time)
+                            
                     except Exception as e:
                         logger.error(f"Error processing chunk {chunk.chunk_index}: {e}")
                         self.stats.failed_generations += 1
@@ -141,6 +186,10 @@ class MedicalDatasetGenerator:
                 
                 if max_conversations and len(all_conversations) >= max_conversations:
                     break
+                
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info("Stop requested after PDF processing, halting generation.")
+                    return await self._early_exit(all_conversations, output_filename, start_time)
         
         # Update final stats
         self.stats.total_conversations_generated = len(all_conversations)
@@ -227,36 +276,75 @@ class MedicalDatasetGenerator:
         return True
     
     async def _save_dataset(self, conversations: List[DatasetEntry], filename: str) -> Path:
-        """Save the dataset in the required format."""
+        """Save the dataset in the required format matching the reference structure."""
         
         output_path = config.output_dir / filename
         
-        # Convert to the required format
-        dataset_conversations = []
-        
-        for entry in conversations:
-            dataset_item = [
-                {
-                    "from": "user",
-                    "value": entry.user_message
-                },
-                {
-                    "from": "assistant", 
-                    "value": entry.assistant_message
+        if config.dataset_format == "instruction":
+            # Instruction format: instruction/input/output
+            dataset_records = []
+            
+            for i, entry in enumerate(conversations):
+                # For instruction format, we need to transform the conversation
+                # Extract medical context as instruction, user message as input, assistant message as output
+                medical_context = entry.metadata.get('medical_context', '')
+                
+                # Create instruction based on medical context or use a default
+                if medical_context:
+                    instruction = f"You are a medical AI assistant. Based on the following medical context, provide helpful and accurate information: {medical_context[:200]}..."
+                else:
+                    instruction = "You are a medical AI assistant. Provide helpful, accurate medical information while encouraging users to consult healthcare professionals for specific medical advice."
+                
+                record = {
+                    "instruction": instruction,
+                    "input": entry.user_message,
+                    "output": entry.assistant_message
                 }
-            ]
-            dataset_conversations.append(dataset_item)
+                
+                dataset_records.append(record)
+            
+            format_info = {
+                'description': 'Instruction-tuning format with instruction, input, and output fields',
+                'format_type': 'instruction_tuning',
+                'total_records': len(dataset_records),
+                'structure': 'Each record contains instruction (system prompt), input (user query), and output (assistant response)'
+            }
         
-        # Wrap in conversations object
-        dataset = {
-            "conversations": dataset_conversations
-        }
+        else:
+            # Default ChatML format: conversations array
+            dataset_records = []
+            
+            for i, entry in enumerate(conversations):
+                # Create a record for each conversation pair with separate human/gpt messages
+                record = {
+                    "id": str(i + 1),  # Start IDs from 1 to match reference format
+                    "conversations": [
+                        {
+                            "from": "human",
+                            "value": entry.user_message
+                        },
+                        {
+                            "from": "gpt", 
+                            "value": entry.assistant_message
+                        }
+                    ]
+                }
+                
+                dataset_records.append(record)
+            
+            format_info = {
+                'description': 'Each conversation pair is stored as a separate record with ID and conversations array',
+                'format_type': 'id_conversations_array',
+                'total_conversation_pairs': len(conversations),
+                'total_records': len(dataset_records),
+                'structure': 'Each record contains id (string) and conversations array with from/value objects'
+            }
         
-        # Save main dataset
+        # Save main dataset as array (not wrapped in object)
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(dataset, f, indent=2, ensure_ascii=False)
+            json.dump(dataset_records, f, indent=2, ensure_ascii=False)
         
-        # Save metadata separately
+        # Save metadata separately with format information
         metadata_path = output_path.with_suffix('.metadata.json')
         metadata = {
             'generation_stats': asdict(self.stats),
@@ -265,15 +353,18 @@ class MedicalDatasetGenerator:
                 'chunk_overlap': config.chunk_overlap,
                 'max_conversations_per_chunk': config.max_conversations_per_chunk,
                 'temperature': config.temperature,
-                'max_tokens': config.max_tokens
+                'max_tokens': config.max_tokens,
+                'dataset_format': config.dataset_format
             },
-            'conversation_metadata': [entry.metadata for entry in conversations]
+            'conversation_metadata': [entry.metadata for entry in conversations],
+            'format_info': format_info
         }
         
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
         
-        logger.info(f"Saved {len(dataset_conversations)} conversations to {output_path}")
+        logger.info(f"Saved {len(conversations)} conversation pairs ({len(dataset_records)} total records) to {output_path}")
+        logger.info(f"Dataset format: {config.dataset_format}")
         logger.info(f"Saved metadata to {metadata_path}")
         
         return output_path
@@ -300,6 +391,7 @@ class MedicalDatasetGenerator:
     async def generate_sample_dataset(self, num_samples: int = 50) -> Path:
         """Generate a small sample dataset for testing."""
         logger.info(f"Generating sample dataset with {num_samples} conversations")
+        # The stop_event set by TUI will be used by generate_dataset
         return await self.generate_dataset(max_conversations=num_samples)
     
     def get_statistics(self) -> GenerationStats:

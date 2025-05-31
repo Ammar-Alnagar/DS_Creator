@@ -38,12 +38,63 @@ def run_async_command(func):
     return wrapper
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option('--log-level', default='INFO', help='Set logging level')
 @click.version_option(version='1.0.0')
-def cli(log_level):
-    """Medical Dataset Creator - Generate conversation datasets from medical PDFs using DeepSeek, OpenAI-compatible APIs, and local models."""
+@click.pass_context
+def cli(ctx, log_level):
+    """Medical Dataset Creator - Generate conversation datasets from medical PDFs.
+    
+    🏥 INTERACTIVE MODE (Default):
+    Simply run 'python main.py' to launch the interactive TUI interface.
+    
+    📋 AVAILABLE FORMATS:
+    • ChatML: {"conversations": [{"from": "human", "value": "..."}]}
+    • Instruction: {"instruction": "...", "input": "...", "output": "..."}
+    
+    🤖 SUPPORTED PROVIDERS:
+    • DeepSeek API
+    • OpenAI Compatible APIs (OpenRouter, etc.)
+    • Local Hugging Face Models
+    
+    Use 'python main.py COMMAND --help' for command-specific help.
+    """
     setup_logging(log_level)
+    
+    # If no command is provided, launch TUI
+    if ctx.invoked_subcommand is None:
+        console.print("[bold green]🏥 Medical Dataset Creator[/bold green]")
+        console.print("[yellow]Launching interactive TUI interface...[/yellow]")
+        console.print("[dim]Use 'python main.py --help' to see all available commands[/dim]")
+        launch_tui()
+
+
+@cli.command()
+def tui():
+    """🖥️  Launch the interactive TUI (Terminal User Interface).
+    
+    The TUI provides a user-friendly menu system where you can:
+    • Select AI provider (DeepSeek, OpenAI, Local HuggingFace)
+    • Choose dataset format (ChatML or Instruction)
+    • Configure generation options (sample vs full, limits, etc.)
+    • Monitor generation progress in real-time
+    """
+    launch_tui()
+
+
+def launch_tui():
+    """Launch the TUI interface."""
+    try:
+        from src.tui_menu import run_tui
+        run_tui()
+    except ImportError as e:
+        console.print(f"[red]Error: Could not import TUI module. Make sure 'textual' is installed.[/red]")
+        console.print(f"[yellow]Run: pip install textual[/yellow]")
+        console.print(f"[red]Details: {e}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error launching TUI: {e}[/red]")
+        sys.exit(1)
 
 
 async def _generate_async(input_dir, output_file, max_conversations, sample, use_local):

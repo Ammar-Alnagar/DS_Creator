@@ -6,6 +6,8 @@ input_pdfs/
 output_pdfs/
 datasets/
 models_cache/
+venv/
+.DS_Store
 
 # C extensions
 *.so

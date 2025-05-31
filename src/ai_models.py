@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 from openai import AsyncOpenAI
 from transformers import (
@@ -44,6 +45,11 @@ class BaseAIModel(ABC):
     
     def __init__(self, model_name: str):
         self.model_name = model_name
+        self.stop_event: Optional[asyncio.Event] = None
+    
+    def set_stop_event(self, stop_event: asyncio.Event):
+        """Set the event used to signal a stop request."""
+        self.stop_event = stop_event
     
     @abstractmethod
     async def generate_conversations(self, medical_text: str, num_conversations: int) -> List[ConversationPair]:
@@ -88,9 +94,32 @@ class DeepSeekModel(BaseAIModel):
                     )
                     return response.status_code == 200
             
-            # Run the async test
+            # Check if we're already in an event loop
             import asyncio
-            return asyncio.run(test_request())
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an event loop, create a task and run it
+                task = asyncio.create_task(test_request())
+                # We need to wait for it somehow - let's use asyncio.wait_for with a timeout
+                import concurrent.futures
+                import threading
+                
+                # Create a new event loop in a separate thread
+                def run_in_new_loop():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(test_request())
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_new_loop)
+                    return future.result(timeout=15)
+                    
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                return asyncio.run(test_request())
             
         except Exception as e:
             logger.warning(f"DeepSeek API not available: {e}")
@@ -98,6 +127,9 @@ class DeepSeekModel(BaseAIModel):
     
     async def generate_conversations(self, medical_text: str, num_conversations: int) -> List[ConversationPair]:
         """Generate conversation pairs using DeepSeek API."""
+        if self.stop_event and self.stop_event.is_set():
+            logger.info("Stop requested before DeepSeek API call.")
+            return []
         
         prompt = self._get_generation_prompt(medical_text, num_conversations)
         
@@ -142,7 +174,16 @@ class DeepSeekModel(BaseAIModel):
                     usage_info
                 )
                 
+        except httpx.ReadTimeout:
+            logger.warning(f"DeepSeek API call timed out for model {self.model_name}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON from DeepSeek API: {e}. Response: {content}")
+            return []
         except Exception as e:
+            if self.stop_event and self.stop_event.is_set():
+                logger.info(f"DeepSeek API call potentially interrupted by stop request: {e}")
+                return []
             logger.error(f"Error calling DeepSeek API: {e}")
             return []
     
@@ -287,19 +328,43 @@ class OpenAICompatibleModel(BaseAIModel):
                 except Exception:
                     return False
             
+            # Check if we're already in an event loop
             import asyncio
-            return asyncio.run(test_request())
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an event loop, create a new event loop in a separate thread
+                import concurrent.futures
+                
+                # Create a new event loop in a separate thread
+                def run_in_new_loop():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(test_request())
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_new_loop)
+                    return future.result(timeout=15)
+                    
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                return asyncio.run(test_request())
             
         except Exception as e:
             logger.warning(f"OpenAI-compatible API not available: {e}")
             return False
     
     async def generate_conversations(self, medical_text: str, num_conversations: int) -> List[ConversationPair]:
-        """Generate conversation pairs using OpenAI-compatible API."""
-        
-        prompt = self._get_generation_prompt(medical_text, num_conversations)
+        """Generate conversations using OpenAI-compatible API."""
+        if self.stop_event and self.stop_event.is_set():
+            logger.info(f"Stop requested before {self.model_name} API call.")
+            return []
         
         try:
+            prompt = self._get_generation_prompt(medical_text, num_conversations)
+            
             response = await self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -309,13 +374,10 @@ class OpenAICompatibleModel(BaseAIModel):
             )
             
             content = response.choices[0].message.content
+            logger.debug(f"Raw response content: {content[:200]}...")
             
-            # Parse JSON response
-            try:
-                conversations_data = json.loads(content)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse JSON from OpenAI-compatible API, attempting text extraction")
-                conversations_data = self._extract_conversations_from_text(content, num_conversations)
+            # Enhanced JSON parsing with multiple fallback strategies
+            conversations_data = self._parse_response_content(content, num_conversations)
             
             # Track usage
             usage_info = {
@@ -330,15 +392,153 @@ class OpenAICompatibleModel(BaseAIModel):
                 usage_info
             )
             
-        except Exception as e:
-            logger.error(f"Error calling OpenAI-compatible API: {e}")
+        except httpx.ReadTimeout:
+            logger.warning(f"{self.model_name} API call timed out.")
             return []
+
+    def _parse_response_content(self, content: str, num_conversations: int) -> Dict:
+        """Enhanced response parsing with multiple fallback strategies."""
+        if not content:
+            logger.warning("Empty response content received")
+            return {"conversations": []}
+        
+        # Strategy 1: Direct JSON parsing
+        try:
+            conversations_data = json.loads(content)
+            if "conversations" in conversations_data:
+                logger.debug("Successfully parsed JSON response")
+                return conversations_data
+        except json.JSONDecodeError as e:
+            logger.debug(f"Direct JSON parsing failed: {e}")
+        
+        # Strategy 2: Extract JSON from mixed content
+        try:
+            # Look for JSON block in the response
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                conversations_data = json.loads(json_str)
+                if "conversations" in conversations_data:
+                    logger.debug("Successfully extracted JSON from mixed content")
+                    return conversations_data
+        except (json.JSONDecodeError, AttributeError) as e:
+            logger.debug(f"JSON extraction from mixed content failed: {e}")
+        
+        # Strategy 3: Enhanced text extraction
+        logger.warning("Failed to parse JSON from OpenAI-compatible API, attempting enhanced text extraction")
+        return self._extract_conversations_from_text(content, num_conversations)
+
+    def _extract_conversations_from_text(self, content: str, num_conversations: int) -> Dict:
+        """Enhanced conversation extraction from unstructured text."""
+        conversations = []
+        
+        # Clean the content
+        content = content.strip()
+        lines = content.split('\n')
+        
+        current_conv = {}
+        
+        # Enhanced patterns for different response formats
+        user_patterns = [
+            r'^(?:User|Patient|Question|Q):\s*(.+)$',
+            r'^(?:\d+\.?\s*)?(?:User|Patient|Question|Q):\s*(.+)$',
+            r'(?i)(?:user|patient|question)\s*:\s*(.+)$',
+        ]
+        
+        assistant_patterns = [
+            r'^(?:Assistant|AI|Answer|A|Response):\s*(.+)$',
+            r'^(?:\d+\.?\s*)?(?:Assistant|AI|Answer|A|Response):\s*(.+)$',
+            r'(?i)(?:assistant|ai|answer|response)\s*:\s*(.+)$',
+        ]
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Check for user message patterns
+            user_match = None
+            for pattern in user_patterns:
+                user_match = re.match(pattern, line, re.IGNORECASE)
+                if user_match:
+                    break
+            
+            if user_match:
+                # Save previous conversation if complete
+                if current_conv and 'user' in current_conv and 'assistant' in current_conv:
+                    conversations.append(current_conv)
+                    if len(conversations) >= num_conversations:
+                        break
+                
+                current_conv = {'user': user_match.group(1).strip()}
+                continue
+            
+            # Check for assistant message patterns
+            assistant_match = None
+            for pattern in assistant_patterns:
+                assistant_match = re.match(pattern, line, re.IGNORECASE)
+                if assistant_match:
+                    break
+            
+            if assistant_match and 'user' in current_conv:
+                current_conv['assistant'] = assistant_match.group(1).strip()
+                current_conv['context'] = "Generated from text extraction"
+                continue
+            
+            # If we have a user message but no assistant match, this might be continuation
+            if 'user' in current_conv and 'assistant' not in current_conv and line:
+                # Check if this looks like an assistant response (no label)
+                if not any(re.match(pattern, line, re.IGNORECASE) for pattern in user_patterns):
+                    current_conv['assistant'] = line
+                    current_conv['context'] = "Generated from text extraction"
+        
+        # Add the last conversation if complete
+        if current_conv and 'user' in current_conv and 'assistant' in current_conv:
+            conversations.append(current_conv)
+        
+        # If we still don't have conversations, try a more aggressive approach
+        if not conversations:
+            conversations = self._fallback_text_extraction(content, num_conversations)
+        
+        logger.info(f"Extracted {len(conversations)} conversations from text")
+        return {"conversations": conversations[:num_conversations]}
+
+    def _fallback_text_extraction(self, content: str, num_conversations: int) -> List[Dict]:
+        """Fallback method for extracting conversations when standard patterns fail."""
+        conversations = []
+        
+        # Split content into potential conversation blocks
+        blocks = re.split(r'\n\s*\n', content)
+        
+        for block in blocks[:num_conversations * 2]:  # Look at more blocks
+            block = block.strip()
+            if len(block) < 20:  # Skip very short blocks
+                continue
+            
+            # Try to split the block into question and answer
+            sentences = re.split(r'[.!?]+', block)
+            if len(sentences) >= 2:
+                # Take the first sentence as user, rest as assistant
+                user_msg = sentences[0].strip()
+                assistant_msg = '. '.join(sentences[1:]).strip()
+                
+                if len(user_msg) > 10 and len(assistant_msg) > 20:
+                    conversations.append({
+                        'user': user_msg,
+                        'assistant': assistant_msg,
+                        'context': 'Fallback extraction'
+                    })
+                    
+                    if len(conversations) >= num_conversations:
+                        break
+        
+        return conversations
     
     def _get_generation_prompt(self, medical_text: str, num_conversations: int) -> str:
         """Generate the prompt for OpenAI-compatible APIs."""
         return f"""You are a medical AI assistant creating educational conversation examples for training purposes.
 
-Create {num_conversations} realistic but educational conversation examples between patients and medical AI assistants based on this medical reference text:
+Create exactly {num_conversations} realistic but educational conversation examples between patients and medical AI assistants based on this medical reference text:
 
 MEDICAL REFERENCE TEXT:
 {medical_text[:1500]}
@@ -357,67 +557,74 @@ IMPORTANT GUIDELINES:
 - Keep conversations informational and educational
 - Avoid specific medical advice or treatment recommendations
 
-Format as valid JSON with this structure:
+CRITICAL: You must respond with ONLY valid JSON in exactly this format (no additional text, explanations, or formatting):
+
 {{
   "conversations": [
     {{
-      "user": "educational health question",
-      "assistant": "informational response with disclaimers", 
-      "context": "educational context"
+      "user": "What are the common symptoms of diabetes?",
+      "assistant": "Common symptoms of diabetes include increased thirst, frequent urination, unexplained weight loss, fatigue, and blurred vision. However, symptoms can vary, and some people may not experience obvious symptoms initially. It's important to consult with a healthcare professional for proper screening and diagnosis if you have concerns about diabetes.",
+      "context": "educational health information"
+    }},
+    {{
+      "user": "How can I prevent heart disease?",
+      "assistant": "Heart disease prevention typically involves maintaining a healthy lifestyle including regular exercise, a balanced diet low in saturated fats, not smoking, limiting alcohol, and managing stress. Regular check-ups with your healthcare provider are also important for monitoring risk factors like blood pressure and cholesterol. Please consult with your doctor for personalized prevention strategies.",
+      "context": "preventive health education"
     }}
   ]
 }}
 
-JSON Response:"""
-    
-    def _extract_conversations_from_text(self, content: str, num_conversations: int) -> Dict:
-        """Extract conversations from unstructured text if JSON parsing fails."""
-        conversations = []
-        
-        # Simple pattern matching for fallback
-        lines = content.split('\n')
-        current_conv = {}
-        
-        for line in lines:
-            line = line.strip()
-            if line.startswith(('User:', 'Patient:', 'Q:')):
-                if current_conv and 'user' in current_conv and 'assistant' in current_conv:
-                    conversations.append(current_conv)
-                current_conv = {'user': line.split(':', 1)[1].strip()}
-            elif line.startswith(('Assistant:', 'AI:', 'A:')):
-                if 'user' in current_conv:
-                    current_conv['assistant'] = line.split(':', 1)[1].strip()
-                    current_conv['context'] = "Generated from text"
-        
-        # Add the last conversation
-        if current_conv and 'user' in current_conv and 'assistant' in current_conv:
-            conversations.append(current_conv)
-        
-        return {"conversations": conversations[:num_conversations]}
+Generate exactly {num_conversations} conversations in this exact JSON format:"""
     
     def _parse_conversations(self, result: Dict, medical_context: str, usage_info: Dict) -> List[ConversationPair]:
         """Parse OpenAI-compatible API response into ConversationPair objects."""
         conversations = []
         
-        if "conversations" not in result:
-            logger.warning("Invalid response format from OpenAI-compatible API")
+        if not isinstance(result, dict):
+            logger.warning(f"Invalid response format from OpenAI-compatible API - not a dict: {type(result)}")
             return conversations
         
-        for i, conv in enumerate(result["conversations"]):
-            if "user" in conv and "assistant" in conv:
-                conversations.append(ConversationPair(
-                    user_message=conv["user"],
-                    assistant_message=conv["assistant"],
-                    medical_context=conv.get("context", medical_context[:200]),
-                    confidence_score=self._calculate_quality_score(conv),
-                    generation_metadata={
-                        "model": self.model_name,
-                        "provider": "openai_compatible",
-                        "usage": usage_info,
-                        "conversation_index": i
-                    }
-                ))
+        if "conversations" not in result:
+            logger.warning(f"Invalid response format from OpenAI-compatible API - missing 'conversations' key. Keys found: {list(result.keys())}")
+            return conversations
         
+        conversations_list = result["conversations"]
+        if not isinstance(conversations_list, list):
+            logger.warning(f"Invalid conversations format - not a list: {type(conversations_list)}")
+            return conversations
+        
+        logger.info(f"Processing {len(conversations_list)} conversations from API response")
+        
+        for i, conv in enumerate(conversations_list):
+            if not isinstance(conv, dict):
+                logger.warning(f"Conversation {i} is not a dict: {type(conv)}")
+                continue
+                
+            if "user" not in conv or "assistant" not in conv:
+                logger.warning(f"Conversation {i} missing required keys. Keys found: {list(conv.keys())}")
+                continue
+            
+            user_msg = conv["user"]
+            assistant_msg = conv["assistant"]
+            
+            if not user_msg or not assistant_msg:
+                logger.warning(f"Conversation {i} has empty messages - user: {bool(user_msg)}, assistant: {bool(assistant_msg)}")
+                continue
+            
+            conversations.append(ConversationPair(
+                user_message=user_msg,
+                assistant_message=assistant_msg,
+                medical_context=conv.get("context", medical_context[:200]),
+                confidence_score=self._calculate_quality_score(conv),
+                generation_metadata={
+                    "model": self.model_name,
+                    "provider": "openai_compatible",
+                    "usage": usage_info,
+                    "conversation_index": i
+                }
+            ))
+        
+        logger.info(f"Successfully parsed {len(conversations)} valid conversations")
         return conversations
     
     def _calculate_quality_score(self, conversation: Dict) -> float:
@@ -543,45 +750,66 @@ class HuggingFaceLocalModel(BaseAIModel):
     
     async def generate_conversations(self, medical_text: str, num_conversations: int) -> List[ConversationPair]:
         """Generate conversation pairs using local Hugging Face model."""
-        
-        conversations = []
-        
-        try:
-            for i in range(num_conversations):
+        if not self.is_available():
+            logger.warning(f"Local model {self.model_name} not available. Skipping generation.")
+            return []
+
+        all_pairs = []
+        for i in range(num_conversations):
+            if self.stop_event and self.stop_event.is_set():
+                logger.info(f"Stop requested during HuggingFaceLocalModel generation loop for {self.model_name}.")
+                break
+
+            try:
                 # Generate user message
                 user_prompt = self._get_user_generation_prompt(medical_text, i)
-                user_message = await self._generate_text(user_prompt, max_length=100)
-                user_message = self._clean_generated_text(user_message)
                 
-                if len(user_message) < config.min_conversation_length:
-                    continue
-                
+                if self.stop_event and self.stop_event.is_set(): break
+                user_message_raw = await asyncio.to_thread(
+                    self.pipeline, 
+                    user_prompt, 
+                    max_length=150,
+                    num_return_sequences=1,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                user_message = self._clean_generated_text(user_message_raw[0]['generated_text'])
+
+                if not user_message: continue
+
                 # Generate assistant response
                 assistant_prompt = self._get_assistant_generation_prompt(medical_text, user_message)
-                assistant_message = await self._generate_text(assistant_prompt, max_length=200)
-                assistant_message = self._clean_generated_text(assistant_message)
                 
-                if len(assistant_message) < config.min_conversation_length:
-                    continue
+                if self.stop_event and self.stop_event.is_set(): break
+                assistant_message_raw = await asyncio.to_thread(
+                    self.pipeline, 
+                    assistant_prompt, 
+                    max_length=config.max_conversation_length,
+                    num_return_sequences=1,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+                assistant_message = self._clean_generated_text(assistant_message_raw[0]['generated_text'])
+
+                if not assistant_message: continue
                 
-                # Create conversation pair
-                conversations.append(ConversationPair(
+                # Create ConversationPair
+                pair = ConversationPair(
                     user_message=user_message,
                     assistant_message=assistant_message,
                     medical_context=medical_text[:200],
-                    confidence_score=self._calculate_local_quality_score(user_message, assistant_message),
-                    generation_metadata={
-                        "model": self.model_name,
-                        "provider": "huggingface_local",
-                        "device": self.device,
-                        "conversation_index": i
-                    }
-                ))
+                    confidence_score=0.7,
+                    generation_metadata={'model': self.model_name, 'iteration': i}
+                )
+                all_pairs.append(pair)
+                
+                await asyncio.sleep(0.05)
+
+            except Exception as e:
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info(f"HuggingFaceLocalModel generation loop potentially interrupted by stop request: {e}")
+                    break
+                logger.error(f"Error during local generation with {self.model_name} (iteration {i}): {e}")
         
-        except Exception as e:
-            logger.error(f"Error generating conversations with local model: {e}")
-        
-        return conversations
+        return all_pairs
     
     async def _generate_text(self, prompt: str, max_length: int = 100) -> str:
         """Generate text using the local model."""
@@ -677,41 +905,79 @@ class AIModelManager:
     """Manager class for coordinating different AI models."""
     
     def __init__(self):
-        self.models = {}
+        self.models: Dict[str, BaseAIModel] = {}
+        self.stop_event: Optional[asyncio.Event] = None
         self._initialize_models()
     
     def _initialize_models(self):
         """Initialize available models based on configuration."""
         
+        logger.info(f"Initializing models with API provider: {config.api_provider}")
+        logger.info(f"Default model: {config.default_model}")
+        logger.info(f"DeepSeek API key configured: {bool(config.deepseek_api_key)}")
+        logger.info(f"OpenAI API key configured: {bool(config.openai_api_key)}")
+        logger.info(f"Use local model: {config.use_local_model}")
+        
         # Initialize based on API provider setting
         if config.api_provider == "deepseek" and config.deepseek_api_key:
             try:
+                logger.info("Attempting to initialize DeepSeek model...")
                 self.models["deepseek"] = DeepSeekModel(config.default_model)
-                logger.info("DeepSeek model initialized")
+                logger.info("DeepSeek model initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize DeepSeek model: {e}")
+                logger.exception("DeepSeek initialization error details:")
         
         elif config.api_provider == "openai" and config.openai_api_key:
             try:
+                logger.info("Attempting to initialize OpenAI-compatible model...")
+                logger.info(f"Model name: {config.default_model}")
+                logger.info(f"Base URL: {config.openai_base_url}")
                 self.models["openai"] = OpenAICompatibleModel(config.default_model)
-                logger.info("OpenAI-compatible model initialized")
+                logger.info("OpenAI-compatible model initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI-compatible model: {e}")
+                logger.exception("OpenAI-compatible initialization error details:")
         
         # Always try to initialize local model as fallback
         if config.use_local_model:
             try:
+                logger.info("Attempting to initialize local Hugging Face model...")
                 self.models["local"] = HuggingFaceLocalModel()
-                logger.info("Local Hugging Face model initialized")
+                logger.info("Local Hugging Face model initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize local model: {e}")
+                logger.exception("Local model initialization error details:")
+        
+        logger.info(f"Total models initialized: {len(self.models)}")
+        if self.models:
+            logger.info(f"Available models: {list(self.models.keys())}")
+            # Test model availability
+            for model_key, model in self.models.items():
+                try:
+                    is_available = model.is_available()
+                    logger.info(f"Model {model_key} availability check: {is_available}")
+                except Exception as e:
+                    logger.error(f"Error checking availability for {model_key}: {e}")
+                    logger.exception(f"Availability check error for {model_key}:")
         
         if not self.models:
             logger.error("No AI models could be initialized!")
             raise RuntimeError("No usable AI models available. Please check your API keys and configuration.")
     
+    def set_stop_event(self, stop_event: asyncio.Event):
+        """Set the stop event for the manager and propagate to its models."""
+        self.stop_event = stop_event
+        for model in self.models.values():
+            if hasattr(model, 'set_stop_event'):
+                model.set_stop_event(stop_event)
+    
     async def generate_conversations(self, medical_text: str, num_conversations: int) -> List[ConversationPair]:
         """Generate conversations using the best available model."""
+        
+        if self.stop_event and self.stop_event.is_set():
+            logger.info(f"Stop requested before selecting model for provider {config.api_provider}.")
+            return []
         
         # Try models in priority order
         model_priority = []

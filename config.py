@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 
 
@@ -29,6 +29,9 @@ class Config(BaseSettings):
     temperature: float = Field(0.7, env="TEMPERATURE")
     max_tokens: int = Field(1000, env="MAX_TOKENS")
     
+    # Dataset Format Configuration
+    dataset_format: str = Field("chatml", env="DATASET_FORMAT")  # chatml or instruction
+    
     # Generation Settings
     max_conversations_per_chunk: int = Field(5, env="MAX_CONVERSATIONS_PER_CHUNK")
     min_conversation_length: int = Field(50, env="MIN_CONVERSATION_LENGTH")
@@ -51,6 +54,21 @@ class Config(BaseSettings):
     
     # Logging
     log_level: str = Field("INFO", env="LOG_LEVEL")
+    
+    @validator('api_provider', 'default_model', 'local_model_name', 'device', 'log_level', pre=True)
+    def strip_comments(cls, v):
+        """Strip inline comments from string configuration values."""
+        if isinstance(v, str):
+            # Split on '#' and take the first part, then strip whitespace
+            return v.split('#')[0].strip()
+        return v
+    
+    @validator('openai_base_url', pre=True)
+    def strip_comments_from_url(cls, v):
+        """Strip inline comments from URL configuration values."""
+        if isinstance(v, str):
+            return v.split('#')[0].strip()
+        return v
     
     class Config:
         env_file = ".env"
