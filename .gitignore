@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
+input_pdfs/
+output_pdfs/
+datasets/
+models_cache/
 
 # C extensions
 *.so
