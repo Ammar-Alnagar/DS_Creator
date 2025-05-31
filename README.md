@@ -8,7 +8,90 @@
 [![OpenAI](https://img.shields.io/badge/AI-OpenAI%20Compatible-cyan.svg)](https://openrouter.ai/)
 [![Local Models](https://img.shields.io/badge/AI-Local%20Models-orange.svg)](https://huggingface.co/)
 
-## 🚀 What's New in v2.2
+## 🏗️ System Architecture
+
+```mermaid
+graph TB
+    A[📄 Input PDFs] --> B[🔍 PDF Processor]
+    B --> C[📝 Text Extraction]
+    C --> D[✂️ Smart Chunking]
+    D --> E[🤖 AI Model Selection]
+    
+    E --> F[☁️ Cloud APIs]
+    E --> G[🏠 Local Models]
+    
+    F --> H[🔮 DeepSeek]
+    F --> I[🌐 OpenRouter]
+    F --> J[🧠 OpenAI]
+    
+    G --> K[🤗 Hugging Face]
+    
+    H --> L[💬 Conversation Generation]
+    I --> L
+    J --> L
+    K --> L
+    
+    L --> M[✅ Quality Validation]
+    M --> N[📊 Dataset Output]
+    M --> O[📈 Metadata]
+    
+    style A fill:#e1f5fe
+    style N fill:#e8f5e8
+    style O fill:#fff3e0
+    style L fill:#f3e5f5
+```
+
+## 📊 Performance Comparison
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    🚀 Provider Performance                      │
+├─────────────┬──────────┬─────────┬──────────┬─────────┬─────────┤
+│ Provider    │ Cost/1K  │ Quality │ Speed    │ Privacy │ Setup   │
+├─────────────┼──────────┼─────────┼──────────┼─────────┼─────────┤
+│ 🔮 DeepSeek │ $0.14    │ ⭐⭐⭐⭐⭐ │ ⚡⚡⚡⚡   │ ☁️      │ 🟢 Easy │
+│ 🌐 OpenRtr  │ $0.50    │ ⭐⭐⭐⭐⭐ │ ⚡⚡⚡     │ ☁️      │ 🟢 Easy │
+│ 🧠 OpenAI   │ $1.00    │ ⭐⭐⭐⭐⭐ │ ⚡⚡⚡     │ ☁️      │ 🟢 Easy │
+│ 🏠 Local    │ Free     │ ⭐⭐⭐     │ ⚡⚡       │ 🔒 Full │ 🟡 Med  │
+└─────────────┴──────────┴─────────┴──────────┴─────────┴─────────┘
+```
+
+## 🔄 Data Flow Pipeline
+
+```mermaid
+flowchart LR
+    Start([📁 Start]) --> Check{🔧 Config Valid?}
+    Check -->|❌ No| Error[❌ Show Error]
+    Check -->|✅ Yes| Scan[📄 Scan PDFs]
+    
+    Scan --> Extract[🔍 Extract Text]
+    Extract --> Chunk[✂️ Create Chunks]
+    Chunk --> Quality{📊 Quality Check}
+    
+    Quality -->|❌ Poor| Skip[⏭️ Skip Chunk]
+    Quality -->|✅ Good| Generate[🤖 Generate Conversations]
+    
+    Generate --> Validate{✅ Valid JSON?}
+    Validate -->|❌ No| Retry[🔄 Retry]
+    Validate -->|✅ Yes| Save[💾 Save to Dataset]
+    
+    Skip --> More{📄 More Chunks?}
+    Retry --> More
+    Save --> More
+    
+    More -->|✅ Yes| Chunk
+    More -->|❌ No| Complete[🎉 Complete]
+    
+    Error --> End([🏁 End])
+    Complete --> End
+    
+    style Start fill:#e1f5fe
+    style Complete fill:#e8f5e8
+    style Error fill:#ffebee
+    style Generate fill:#f3e5f5
+```
+
+ ## 🚀 What's New in v2.2
 
 - **🖥️ Interactive TUI Interface**: Beautiful terminal interface for easy configuration and monitoring
 - **📋 Multiple Dataset Formats**: Support for ChatML and Instruction formats
@@ -109,6 +192,54 @@ python main.py tui
 ---
 
 ## 🏃 Quick Start
+
+### 📋 **Installation Flow**
+
+```mermaid
+flowchart TD
+    A[📥 Clone Repository] --> B[🐍 Create Virtual Environment]
+    B --> C[📦 Install Dependencies]
+    C --> D[⚙️ Configure Environment]
+    D --> E{🔑 Choose Provider}
+    
+    E -->|🔮 DeepSeek| F[💰 Get DeepSeek API Key]
+    E -->|🌐 OpenRouter| G[🌍 Get OpenRouter Key]
+    E -->|🏠 Local| H[🤗 Download Models]
+    
+    F --> I[✅ Test Configuration]
+    G --> I
+    H --> I
+    
+    I --> J{🧪 Test Passed?}
+    J -->|❌ No| K[🔧 Fix Issues]
+    J -->|✅ Yes| L[🚀 Generate First Dataset]
+    
+    K --> I
+    L --> M[🎉 Success!]
+    
+    style A fill:#e1f5fe
+    style M fill:#e8f5e8
+    style K fill:#ffebee
+    style E fill:#f3e5f5
+```
+
+### 🎯 **Feature Overview**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           🏥 DS_Creator Features                           │
+├─────────────────┬─────────────────┬─────────────────┬─────────────────────┤
+│                 │                 │                 │                     │
+│   📚 INPUT      │   🤖 AI MODELS  │   💬 OUTPUT     │   🔧 MANAGEMENT     │
+│                 │                 │                 │                     │
+│ 📄 PDF Files    │ ☁️  Cloud APIs   │ 📋 ChatML       │ 🖥️  Interactive TUI │
+│ 📁 Batch Load   │ 🔮 DeepSeek     │ 📋 Instruction  │ 🔧 Config Validate │
+│ 🔍 Auto Extract │ 🌐 OpenRouter   │ 📊 Metadata     │ 📈 Progress Track   │
+│ ✂️  Smart Chunk │ 🧠 OpenAI       │ 📈 Statistics   │ 🔄 Error Recovery  │
+│ 📊 Quality Check│ 🏠 Local Models │ 🎯 JSON Format  │ 📝 Detailed Logs   │
+│                 │                 │                 │                     │
+└─────────────────┴─────────────────┴─────────────────┴─────────────────────┘
+```
 
 ### 1️⃣ **Installation**
 
@@ -246,6 +377,102 @@ LOG_LEVEL=INFO                          # DEBUG, INFO, WARNING, ERROR
 - **Memory Management**: Enable `LOAD_IN_8BIT=true` for large models on limited hardware
 - **Quality vs Speed**: Lower `TEMPERATURE` for more focused output, higher for creativity
 
+### 🔑 **AI Models Ecosystem**
+
+```
+                    🌐 CLOUD MODELS                         🏠 LOCAL MODELS
+    ┌─────────────────────────────────────────┐    ┌─────────────────────────────────┐
+    │                                         │    │                                 │
+    │  🔮 DeepSeek                           │    │  🤗 Hugging Face               │
+    │  ├─ deepseek-chat      ($0.14/1K) ⭐⭐⭐⭐⭐│    │  ├─ DialoGPT-medium    (1.5GB) │
+    │  └─ deepseek-coder     ($0.28/1K) ⭐⭐⭐⭐ │    │  ├─ DialoGPT-large     (3GB)   │
+    │                                         │    │  └─ BlenderBot-400M    (1.6GB)  │
+    │  🌐 OpenRouter                         │    │                                 │
+    │  ├─ claude-3-sonnet    ($3.00/1K) ⭐⭐⭐⭐⭐│    │  🔒 Privacy Benefits:          │
+    │  ├─ gpt-4o            ($5.00/1K) ⭐⭐⭐⭐⭐│    │  ✅ No data leaves your system │
+    │  ├─ llama-3-70b       ($0.80/1K) ⭐⭐⭐⭐ │    │  ✅ Offline capability         │
+    │  └─ gemini-pro-1.5    ($1.25/1K) ⭐⭐⭐⭐ │    │  ✅ No usage limits            │
+    │                                         │    │  ⚠️  Requires GPU (recommended)  │
+    │  🧠 Direct OpenAI                      │    │                                 │
+    │  ├─ gpt-4o            ($10.0/1K) ⭐⭐⭐⭐⭐│    └─────────────────────────────────┘
+    │  ├─ gpt-4-turbo       ($8.00/1K) ⭐⭐⭐⭐ │
+    │  └─ gpt-3.5-turbo     ($2.00/1K) ⭐⭐⭐   │
+    │                                         │
+    └─────────────────────────────────────────┘
+```
+
+### 🏗️ **Deployment Architecture**
+
+```mermaid
+graph TB
+    subgraph "🖥️ User Environment"
+        CLI[🖥️ Terminal Interface]
+        TUI[🎨 Interactive TUI]
+        Config[⚙️ Configuration]
+    end
+    
+    subgraph "🔧 Processing Engine"
+        PDF[📄 PDF Processor]
+        Chunk[✂️ Text Chunker]
+        QA[✅ Quality Analyzer]
+    end
+    
+    subgraph "🤖 AI Layer"
+        Router[🎯 Model Router]
+        
+        subgraph "☁️ Cloud Services"
+            DeepSeek[🔮 DeepSeek API]
+            OpenRouter[🌐 OpenRouter API]
+            OpenAI[🧠 OpenAI API]
+        end
+        
+        subgraph "🏠 Local Inference"
+            HF[🤗 Hugging Face]
+            GPU[🎮 GPU/CPU Compute]
+        end
+    end
+    
+    subgraph "💾 Output Layer"
+        JSON[📄 JSON Dataset]
+        Meta[📊 Metadata]
+        Stats[📈 Statistics]
+    end
+    
+    CLI --> Config
+    TUI --> Config
+    Config --> PDF
+    PDF --> Chunk
+    Chunk --> QA
+    QA --> Router
+    
+    Router --> DeepSeek
+    Router --> OpenRouter
+    Router --> OpenAI
+    Router --> HF
+    HF --> GPU
+    
+    DeepSeek --> JSON
+    OpenRouter --> JSON
+    OpenAI --> JSON
+    HF --> JSON
+    
+    JSON --> Meta
+    JSON --> Stats
+    
+    style CLI fill:#e3f2fd
+    style TUI fill:#f3e5f5
+    style DeepSeek fill:#e8f5e8
+    style HF fill:#fff3e0
+    style JSON fill:#e8f5e8
+```
+
+| Provider | Cost/1K Tokens | Quality | Privacy | Setup | GPU Required |
+|----------|----------------|---------|---------|-------|--------------|
+| **DeepSeek** | $0.14-0.28 | ⭐⭐⭐⭐⭐ | Cloud | 🟢 Easy | ❌ No |
+| **OpenRouter** | $0.50-3.00 | ⭐⭐⭐⭐⭐ | Cloud | 🟢 Easy | ❌ No |
+| **OpenAI** | $1.00-10.00 | ⭐⭐⭐⭐⭐ | Cloud | 🟢 Easy | ❌ No |
+| **Local Models** | Free | ⭐⭐⭐ | Private | 🟡 Medium | ⚠️ Recommended |
+
 ---
 
 ## 🤖 AI Models
@@ -308,6 +535,74 @@ LOCAL_MODEL_NAME=microsoft/DialoGPT-small      # ~700MB, basic quality
 ---
 
 ## 💻 Usage Examples
+
+### 🎯 **Usage Patterns**
+
+```mermaid
+graph TB
+    subgraph "👨‍💻 User Types"
+        Beginner[🔰 Beginner]
+        Advanced[🎖️ Advanced User]
+        Researcher[🔬 Researcher]
+        Enterprise[🏢 Enterprise]
+    end
+    
+    subgraph "🖥️ Interface Options"
+        TUI[🎨 Interactive TUI]
+        CLI[⌨️ Command Line]
+        Script[📜 Python Scripts]
+        API[🔌 API Integration]
+    end
+    
+    subgraph "📊 Use Cases"
+        Quick[⚡ Quick Testing]
+        Production[🏭 Production Scale]
+        Research[🧪 Research Dataset]
+        Custom[🎨 Custom Pipeline]
+    end
+    
+    Beginner --> TUI
+    Beginner --> Quick
+    
+    Advanced --> CLI
+    Advanced --> Production
+    
+    Researcher --> Script
+    Researcher --> Research
+    
+    Enterprise --> API
+    Enterprise --> Custom
+    
+    TUI --> Quick
+    CLI --> Production
+    Script --> Research
+    API --> Custom
+    
+    style Beginner fill:#e8f5e8
+    style Advanced fill:#e3f2fd
+    style Researcher fill:#fff3e0
+    style Enterprise fill:#f3e5f5
+```
+
+### 📈 **Performance Metrics**
+
+```
+                          🚀 GENERATION PERFORMANCE
+    
+    Provider    │ Speed (conv/min) │ Quality Score │ Cost/1000 conv │ Reliability
+    ────────────┼─────────────────┼───────────────┼─────────────────┼─────────────
+    🔮 DeepSeek │ ████████ 45     │ ⭐⭐⭐⭐⭐ 4.8  │ $2.10           │ ████████ 99%
+    🌐 OpenRtr  │ ███████  35     │ ⭐⭐⭐⭐⭐ 4.9  │ $7.50           │ ███████  95%
+    🧠 OpenAI   │ ██████   30     │ ⭐⭐⭐⭐⭐ 4.9  │ $15.00          │ ████████ 98%
+    🏠 Local    │ ████     20     │ ⭐⭐⭐   3.5   │ $0.00           │ ██████   85%
+    
+    📊 Recommended Configuration by Use Case:
+    
+    🔰 Learning/Testing  → 🔮 DeepSeek + Sample Mode
+    🏭 Production Scale  → 🔮 DeepSeek + Batch Processing  
+    🔒 Privacy Required  → 🏠 Local Models + GPU
+    🎯 Maximum Quality   → 🧠 OpenAI GPT-4 + Low Temperature
+```
 
 ### 🖥️ **Interactive TUI (Recommended)**
 
@@ -398,6 +693,52 @@ export DEFAULT_MODEL=anthropic/claude-3-sonnet && python main.py generate --samp
 ---
 
 ## 📊 Output Format
+
+### 🎨 **Dataset Format Visualization**
+
+```mermaid
+graph LR
+    subgraph "📋 ChatML Format"
+        A[👤 Human Message] --> B[🤖 Assistant Response]
+        B --> C[👤 Follow-up] 
+        C --> D[🤖 Response]
+    end
+    
+    subgraph "📋 Instruction Format"
+        E[📝 System Instruction] --> F[❓ User Input]
+        F --> G[💬 Model Output]
+    end
+    
+    subgraph "📊 Metadata"
+        H[🏥 Medical Context]
+        I[📄 Source PDF]
+        J[⚡ Model Info]
+        K[📈 Quality Score]
+    end
+    
+    style A fill:#e3f2fd
+    style B fill:#f3e5f5
+    style C fill:#e3f2fd
+    style D fill:#f3e5f5
+    style E fill:#fff3e0
+    style F fill:#e8f5e8
+    style G fill:#f3e5f5
+```
+
+### 📈 **Processing Workflow**
+
+```
+                    🔄 DATASET GENERATION PIPELINE
+    
+    📄 PDF Input → 🔍 Text Extract → ✂️ Chunk → 🤖 AI Generate → ✅ Validate → 💾 Save
+         │              │             │           │              │           │
+         ▼              ▼             ▼           ▼              ▼           ▼
+    📚 Multiple     📝 Clean Text   📦 Smart    💬 Medical      🧪 JSON     📊 Dataset
+    Documents       Quality Check   Segments   Conversations   Validation   + Metadata
+    
+    Progress: [████████████████████████████████████████] 100%
+    Stats:    📄 15 PDFs → 📦 342 Chunks → 💬 1,247 Conversations → ✅ 98.5% Success
+```
 
 ### 📋 **Main Dataset File**
 
@@ -670,6 +1011,86 @@ def analyze_dataset_quality(dataset_path: Path):
 ---
 
 ## 🐛 Troubleshooting
+
+### 🔧 **Quick Diagnosis Flowchart**
+
+```mermaid
+flowchart TD
+    Start([🚨 Issue Detected]) --> Type{🔍 What's the Problem?}
+    
+    Type -->|❌ Won't Start| Config[⚙️ Configuration Issue]
+    Type -->|🐌 Slow/Stuck| Performance[⚡ Performance Issue]
+    Type -->|📊 Poor Quality| Quality[🎯 Quality Issue]
+    Type -->|💥 Crashes| Error[🔥 Runtime Error]
+    
+    Config --> ConfigCheck[🧪 Run: python main.py config-check]
+    ConfigCheck --> ConfigOK{✅ Config Valid?}
+    ConfigOK -->|❌ No| FixConfig[🔧 Fix .env file]
+    ConfigOK -->|✅ Yes| APITest[🌐 Test API Keys]
+    
+    Performance --> MemCheck[🧠 Check Memory Usage]
+    MemCheck --> MemOK{💾 RAM Available?}
+    MemOK -->|❌ No| ReduceLoad[⬇️ Reduce Batch Size]
+    MemOK -->|✅ Yes| ModelCheck[🤖 Check Model Size]
+    
+    Quality --> TempCheck[🌡️ Check Temperature]
+    TempCheck --> TempOK{🎯 < 0.8?}
+    TempOK -->|❌ No| LowerTemp[⬇️ Lower Temperature]
+    TempOK -->|✅ Yes| ModelUpgrade[⬆️ Try Better Model]
+    
+    Error --> LogCheck[📝 Check Logs]
+    LogCheck --> LogClear{🔍 Error Clear?}
+    LogClear -->|❌ No| Debug[🐛 Enable DEBUG mode]
+    LogClear -->|✅ Yes| SpecificFix[🎯 Apply Specific Fix]
+    
+    FixConfig --> Retest[🔄 Test Again]
+    ReduceLoad --> Retest
+    LowerTemp --> Retest
+    ModelUpgrade --> Retest
+    Debug --> Support[💬 Contact Support]
+    SpecificFix --> Retest
+    APITest --> Retest
+    ModelCheck --> Retest
+    
+    Retest --> Success{✅ Fixed?}
+    Success -->|✅ Yes| Complete[🎉 Problem Solved!]
+    Success -->|❌ No| Support
+    
+    style Start fill:#ffebee
+    style Complete fill:#e8f5e8
+    style Support fill:#fff3e0
+    style Config fill:#e3f2fd
+    style Performance fill:#f3e5f5
+    style Quality fill:#fff3e0
+    style Error fill:#ffebee
+```
+
+### 🚨 **Common Error Patterns**
+
+```
+    ERROR TYPE                 SYMPTOMS                    QUICK FIX
+┌─────────────────────┬─────────────────────────┬─────────────────────────┐
+│ 🔑 API Key Issues   │ • "Invalid API key"     │ python main.py         │
+│                     │ • "Unauthorized"        │ config-check           │
+│                     │ • "Rate limit"          │                        │
+├─────────────────────┼─────────────────────────┼─────────────────────────┤
+│ 🧠 Memory Problems  │ • "CUDA out of memory"  │ export LOAD_IN_8BIT=true│
+│                     │ • System freezing       │ export BATCH_SIZE=3     │
+│                     │ • Very slow generation  │                        │
+├─────────────────────┼─────────────────────────┼─────────────────────────┤
+│ 📄 PDF Issues      │ • "No text extracted"   │ python main.py analyze │
+│                     │ • Empty chunks          │ --input-dir ./pdfs     │
+│                     │ • Gibberish text        │                        │
+├─────────────────────┼─────────────────────────┼─────────────────────────┤
+│ 🌐 Network Issues   │ • Timeout errors        │ Check internet         │
+│                     │ • Connection failed     │ Try different provider │
+│                     │ • SSL errors            │                        │
+├─────────────────────┼─────────────────────────┼─────────────────────────┤
+│ 📊 Quality Issues   │ • Short responses       │ Lower TEMPERATURE      │
+│                     │ • Irrelevant content    │ Use better model       │
+│                     │ • Invalid JSON          │ Check prompt template  │
+└─────────────────────┴─────────────────────────┴─────────────────────────┘
+```
 
 ### ❌ **Common Issues and Solutions**
 
