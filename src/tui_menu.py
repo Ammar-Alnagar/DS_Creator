@@ -35,6 +35,7 @@ class GenerationConfig:
     input_dir: Optional[Path]
     output_filename: Optional[str]
     sample_count: int
+    hf_repo_name: Optional[str] = None
 
 
 class GenerationScreen(Screen):
@@ -50,12 +51,13 @@ class GenerationScreen(Screen):
         yield Header()
         yield Container(
             Static("🏥 Medical Dataset Generation", classes="title"),
-            Static("Running generation with your selected configuration...", classes="subtitle"),
+            Static("Running generation with your selected configuration..."),
             Vertical(
                 Static(f"Provider: {self.generation_config.provider}", classes="config-item"),
                 Static(f"Format: {self.generation_config.format_type}", classes="config-item"),
                 Static(f"Type: {'Sample (' + str(self.generation_config.sample_count) + ' conversations)' if self.generation_config.use_sample else 'Full PDF'}", classes="config-item"),
                 Static(f"Max Conversations: {self.generation_config.max_conversations or 'No limit'}", classes="config-item"),
+                Static(f"HF Repository: {self.generation_config.hf_repo_name or 'Auto-generated'}", classes="config-item"),
                 classes="config-display"
             ),
             ProgressBar(total=100, show_eta=True, classes="progress"),
@@ -95,14 +97,18 @@ class GenerationScreen(Screen):
             if self.generation_config.use_sample:
                 log_area.text += f"Generating sample dataset ({self.generation_config.sample_count} conversations)...\n"
                 progress_bar.update(progress=30)
-                output_path = await self.generator.generate_sample_dataset(self.generation_config.sample_count)
+                output_path = await self.generator.generate_sample_dataset(
+                    self.generation_config.sample_count,
+                    self.generation_config.hf_repo_name
+                )
             else:
                 log_area.text += "Generating full dataset...\n"
                 progress_bar.update(progress=30)
                 output_path = await self.generator.generate_dataset(
                     input_dir=self.generation_config.input_dir,
                     output_filename=self.generation_config.output_filename,
-                    max_conversations=self.generation_config.max_conversations
+                    max_conversations=self.generation_config.max_conversations,
+                    hf_repo_name=self.generation_config.hf_repo_name
                 )
             
             progress_bar.update(progress=100)
@@ -234,12 +240,12 @@ class MedicalDatasetCreatorTUI(App):
         self.providers = [
             ("deepseek", "DeepSeek API"),
             ("openai", "OpenAI Compatible API"),
-            ("huggingface_local", "Local Hugging Face Model")
+            ("local", "Local Hugging Face Model")
         ]
         
         self.formats = [
-            ("chatml", "ChatML Format (conversations array)"),
-            ("instruction", "Instruction Format (instruction/input/output)")
+            ("chatml", "ChatML Format"),
+            ("instruction", "Instruction Format")
         ]
         
         # Selection state
@@ -247,9 +253,10 @@ class MedicalDatasetCreatorTUI(App):
         self.selected_format = "chatml"
         self.use_sample = True
         self.sample_count = 50
-        self.max_conversations = None
-        self.input_directory = None
-        self.output_filename = None
+        self.max_conversations: Optional[int] = None
+        self.input_directory: Optional[Path] = None
+        self.output_filename: Optional[str] = None
+        self.hf_repo_name: Optional[str] = None
     
     def compose(self) -> ComposeResult:
         yield Header()
@@ -283,8 +290,13 @@ class MedicalDatasetCreatorTUI(App):
             Input(placeholder="Input directory (leave empty for default)", id="input-dir"),
             Input(placeholder="Output filename (auto-generated if empty)", id="output-filename"),
             
+            # HuggingFace Options
+            Static("4. HuggingFace Upload (Optional)"),
+            Input(placeholder="Repository name (e.g., username/dataset-name, auto-generated if empty)", id="hf-repo-name"),
+            Static("Leave empty to auto-generate from filename: Daemontatox/your-dataset-name"),
+            
             # Configuration Preview
-            Static("4. Current Configuration"),
+            Static("5. Current Configuration"),
             Static(id="config-preview"),
             
             # Action Buttons
@@ -347,6 +359,8 @@ class MedicalDatasetCreatorTUI(App):
             self.input_directory = Path(event.value) if event.value.strip() else None
         elif event.input.id == "output-filename":
             self.output_filename = event.value.strip() if event.value.strip() else None
+        elif event.input.id == "hf-repo-name":
+            self.hf_repo_name = event.value.strip() if event.value.strip() else None
         
         self.update_config_preview()
     
@@ -378,6 +392,9 @@ Mode: Full PDF processing"""
             config_text += f"\nOutput Filename: {self.output_filename}"
         else:
             config_text += "\nOutput Filename: Auto-generated"
+        
+        if self.hf_repo_name:
+            config_text += f"\nHuggingFace Repository: {self.hf_repo_name}"
         
         preview.update(config_text)
     
@@ -436,7 +453,8 @@ Mode: Full PDF processing"""
             sample_count=self.sample_count if self.use_sample else 0,
             max_conversations=self.max_conversations,
             input_dir=self.input_directory or config.input_dir,
-            output_filename=self.output_filename
+            output_filename=self.output_filename,
+            hf_repo_name=self.hf_repo_name
         )
         
         # Push generation screen

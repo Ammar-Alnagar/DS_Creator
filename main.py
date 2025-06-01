@@ -430,7 +430,8 @@ def hf_auth():
     hf_key_status = "✅ Configured" if config.huggingface_api_key else "❌ Not configured"
     settings_table.add_row("API Key", hf_key_status)
     settings_table.add_row("Upload Enabled", "✅ Yes" if config.enable_hf_upload else "❌ No")
-    settings_table.add_row("Repository Name", config.hf_repo_name or "❌ Not set")
+    repo_name_display = config.hf_repo_name or "🔄 Auto-generated from filename"
+    settings_table.add_row("Repository Name", repo_name_display)
     settings_table.add_row("Private Repository", "✅ Yes" if config.hf_dataset_private else "❌ No")
     settings_table.add_row("Commit Message", config.hf_commit_message)
     
@@ -452,8 +453,9 @@ def hf_auth():
         console.print("\n[yellow]⚠️  To configure Hugging Face uploads:[/yellow]")
         console.print("1. Get your API key from: https://huggingface.co/settings/tokens")
         console.print("2. Add HUGGINGFACE_API_KEY=your_key_here to your .env file")
-        console.print("3. Set HF_REPO_NAME=username/dataset-name in your .env file")
-        console.print("4. Set ENABLE_HF_UPLOAD=true to enable automatic uploads")
+        console.print("3. Set ENABLE_HF_UPLOAD=true to enable automatic uploads")
+        console.print("4. (Optional) Set HF_REPO_NAME=username/dataset-name for custom repo names")
+        console.print("   Otherwise, repository names will be auto-generated from filenames")
 
 
 @cli.command()
@@ -485,12 +487,11 @@ def hf_upload(dataset_file, repo_name, private, commit_message):
         commit_message = commit_message or config.hf_commit_message
         
         if not repo_name:
-            console.print("[red]❌ Repository name is required. Use --repo-name or set HF_REPO_NAME in .env")
-            return
+            console.print("[yellow]ℹ️  No repository name specified - will auto-generate from filename[/yellow]")
         
-        console.print(f"[yellow]Uploading to: {repo_name}")
-        console.print(f"[yellow]Private: {private}")
-        console.print(f"[yellow]Commit message: {commit_message}")
+        console.print(f"[yellow]Uploading to: {repo_name or 'Auto-generated'}[/yellow]")
+        console.print(f"[yellow]Private: {private}[/yellow]")
+        console.print(f"[yellow]Commit message: {commit_message}[/yellow]")
         
         with console.status("[bold green]Uploading dataset..."):
             success = uploader.upload_dataset(

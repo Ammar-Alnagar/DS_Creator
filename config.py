@@ -35,7 +35,7 @@ class Config(BaseSettings):
     
     # Hugging Face Upload Configuration
     enable_hf_upload: bool = Field(False, env="ENABLE_HF_UPLOAD")
-    hf_repo_name: Optional[str] = Field(None, env="HF_REPO_NAME")  # e.g., "username/dataset-name"
+    hf_repo_name: Optional[str] = Field(None, env="HF_REPO_NAME")  # Optional - auto-generated from filename if not set
     hf_dataset_private: bool = Field(False, env="HF_DATASET_PRIVATE")
     hf_commit_message: str = Field("Upload medical conversation dataset", env="HF_COMMIT_MESSAGE")
     

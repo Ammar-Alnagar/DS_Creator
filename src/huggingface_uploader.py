@@ -96,7 +96,7 @@ class HuggingFaceUploader:
         
         Args:
             dataset_path: Path to the dataset JSON file
-            repo_name: Repository name (defaults to config.hf_repo_name)
+            repo_name: Repository name (auto-generated from filename if None)
             private: Whether repository should be private (defaults to config.hf_dataset_private)
             commit_message: Commit message (defaults to config.hf_commit_message)
             
@@ -107,14 +107,29 @@ class HuggingFaceUploader:
             if not self.authenticate():
                 return False
         
-        # Use config defaults if not provided
-        repo_name = repo_name or config.hf_repo_name
+        # Auto-generate repository name from filename if not provided
+        if not repo_name:
+            # Extract filename without extension
+            filename_base = dataset_path.stem
+            # Clean filename for HuggingFace naming requirements
+            # Replace underscores and spaces with hyphens, remove invalid chars
+            clean_name = filename_base.lower()
+            clean_name = clean_name.replace('_', '-').replace(' ', '-')
+            # Remove any characters that aren't alphanumeric or hyphens
+            clean_name = ''.join(c for c in clean_name if c.isalnum() or c == '-')
+            # Remove consecutive hyphens and trim hyphens from start/end
+            while '--' in clean_name:
+                clean_name = clean_name.replace('--', '-')
+            clean_name = clean_name.strip('-')
+            
+            # Generate repo name with username
+            username = "Daemontatox"
+            repo_name = f"{username}/{clean_name}"
+            logger.info(f"Auto-generated repository name: {repo_name}")
+        
+        # Use config defaults for other parameters if not provided  
         private = private if private is not None else config.hf_dataset_private
         commit_message = commit_message or config.hf_commit_message
-        
-        if not repo_name:
-            logger.error("Repository name not specified. Set HF_REPO_NAME in .env or provide repo_name parameter")
-            return False
         
         if not dataset_path.exists():
             logger.error(f"Dataset file not found: {dataset_path}")
@@ -134,7 +149,7 @@ class HuggingFaceUploader:
                 files_to_upload.append(metadata_path)
             
             # Create README.md with dataset information
-            readme_content = self._generate_readme(dataset_path, metadata_path)
+            readme_content = self._generate_readme(dataset_path, metadata_path, repo_name)
             readme_path = dataset_path.parent / "README.md"
             with open(readme_path, 'w', encoding='utf-8') as f:
                 f.write(readme_content)
@@ -164,7 +179,7 @@ class HuggingFaceUploader:
             logger.error(f"Failed to upload dataset: {e}")
             return False
     
-    def _generate_readme(self, dataset_path: Path, metadata_path: Optional[Path] = None) -> str:
+    def _generate_readme(self, dataset_path: Path, metadata_path: Optional[Path] = None, repo_name: Optional[str] = None) -> str:
         """Generate a README.md file for the dataset."""
         
         # Load basic dataset info
@@ -284,7 +299,7 @@ If you use this dataset, please cite:
   title={{Medical Conversation Dataset}},
   author={{Generated using DS_Creator}},
   year={{{datetime.now().year}}},
-  url={{https://huggingface.co/datasets/[repo_name]}}
+  url={{https://huggingface.co/datasets/{repo_name or 'your-repo-name'}}}
 }}
 ```
 """

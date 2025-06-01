@@ -65,7 +65,7 @@ class MedicalDatasetGenerator:
         if hasattr(self.ai_manager, 'set_stop_event'):
             self.ai_manager.set_stop_event(stop_event)
 
-    async def _early_exit(self, conversations: List[DatasetEntry], output_filename: Optional[str], start_time: datetime) -> Path:
+    async def _early_exit(self, conversations: List[DatasetEntry], output_filename: Optional[str], start_time: datetime, hf_repo_name: Optional[str] = None) -> Path:
         """Handle early exit due to stop request or error."""
         logger.info("Generation process is exiting early.")
         
@@ -86,7 +86,7 @@ class MedicalDatasetGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_filename = f"medical_conversations_partial_{timestamp}.json"
             
-        output_path = await self._save_dataset(conversations, output_filename)
+        output_path = await self._save_dataset(conversations, output_filename, hf_repo_name)
         
         self._log_generation_stats()
         logger.info(f"Partial dataset saved to: {output_path}")
@@ -96,7 +96,8 @@ class MedicalDatasetGenerator:
         self, 
         input_dir: Optional[Path] = None,
         output_filename: Optional[str] = None,
-        max_conversations: Optional[int] = None
+        max_conversations: Optional[int] = None,
+        hf_repo_name: Optional[str] = None
     ) -> Path:
         """
         Generate a complete medical conversation dataset from PDFs.
@@ -105,6 +106,7 @@ class MedicalDatasetGenerator:
             input_dir: Directory containing PDF files (defaults to config.input_dir)
             output_filename: Name for output file (auto-generated if None)
             max_conversations: Maximum number of conversations to generate
+            hf_repo_name: Name of the Hugging Face repository to upload the dataset to
             
         Returns:
             Path to the generated dataset file
@@ -142,12 +144,12 @@ class MedicalDatasetGenerator:
                 
                 if self.stop_event and self.stop_event.is_set():
                     logger.info("Stop requested during PDF processing, halting generation.")
-                    return await self._early_exit(all_conversations, output_filename, start_time)
+                    return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
 
                 for chunk in chunks:
                     if self.stop_event and self.stop_event.is_set():
                         logger.info("Stop requested during chunk processing, halting generation.")
-                        return await self._early_exit(all_conversations, output_filename, start_time)
+                        return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
                     try:
                         # Generate conversations for this chunk
                         conversations = await self.ai_manager.generate_conversations(
@@ -178,7 +180,7 @@ class MedicalDatasetGenerator:
                         await asyncio.sleep(0.1)
                         if self.stop_event and self.stop_event.is_set():
                             logger.info("Stop requested after API call/delay, halting generation.")
-                            return await self._early_exit(all_conversations, output_filename, start_time)
+                            return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
                             
                     except Exception as e:
                         logger.error(f"Error processing chunk {chunk.chunk_index}: {e}")
@@ -191,7 +193,7 @@ class MedicalDatasetGenerator:
                 
                 if self.stop_event and self.stop_event.is_set():
                     logger.info("Stop requested after PDF processing, halting generation.")
-                    return await self._early_exit(all_conversations, output_filename, start_time)
+                    return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
         
         # Update final stats
         self.stats.total_conversations_generated = len(all_conversations)
@@ -203,7 +205,7 @@ class MedicalDatasetGenerator:
         self.stats.processing_time_seconds = (end_time - start_time).total_seconds()
         
         # Save dataset
-        output_path = await self._save_dataset(all_conversations, output_filename)
+        output_path = await self._save_dataset(all_conversations, output_filename, hf_repo_name)
         
         # Log final statistics
         self._log_generation_stats()
@@ -277,7 +279,7 @@ class MedicalDatasetGenerator:
         
         return True
     
-    async def _save_dataset(self, conversations: List[DatasetEntry], filename: str) -> Path:
+    async def _save_dataset(self, conversations: List[DatasetEntry], filename: str, hf_repo_name: Optional[str] = None) -> Path:
         """Save the dataset in the required format matching the reference structure."""
         
         output_path = config.output_dir / filename
@@ -373,7 +375,7 @@ class MedicalDatasetGenerator:
         if self.hf_uploader and config.enable_hf_upload:
             logger.info("Uploading dataset to Hugging Face Hub...")
             try:
-                upload_success = self.hf_uploader.upload_dataset(output_path)
+                upload_success = self.hf_uploader.upload_dataset(output_path, hf_repo_name)
                 if upload_success:
                     logger.info("Successfully uploaded dataset to Hugging Face Hub!")
                 else:
@@ -402,11 +404,11 @@ class MedicalDatasetGenerator:
         
         logger.info("=====================================")
     
-    async def generate_sample_dataset(self, num_samples: int = 50) -> Path:
+    async def generate_sample_dataset(self, num_samples: int = 50, hf_repo_name: Optional[str] = None) -> Path:
         """Generate a small sample dataset for testing."""
         logger.info(f"Generating sample dataset with {num_samples} conversations")
         # The stop_event set by TUI will be used by generate_dataset
-        return await self.generate_dataset(max_conversations=num_samples)
+        return await self.generate_dataset(max_conversations=num_samples, hf_repo_name=hf_repo_name)
     
     def get_statistics(self) -> GenerationStats:
         """Get current generation statistics."""
