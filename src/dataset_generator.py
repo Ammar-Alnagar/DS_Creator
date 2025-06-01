@@ -13,6 +13,7 @@ from tqdm import tqdm
 from config import config
 from src.pdf_processor import PDFProcessor, TextChunk
 from src.ai_models import AIModelManager, ConversationPair
+from src.huggingface_uploader import HuggingFaceUploader
 
 
 @dataclass
@@ -44,6 +45,7 @@ class MedicalDatasetGenerator:
     def __init__(self):
         self.pdf_processor = PDFProcessor()
         self.ai_manager = AIModelManager()
+        self.hf_uploader = HuggingFaceUploader() if config.enable_hf_upload else None
         self.stats = GenerationStats(
             total_pdfs_processed=0,
             total_chunks_extracted=0,
@@ -366,6 +368,18 @@ class MedicalDatasetGenerator:
         logger.info(f"Saved {len(conversations)} conversation pairs ({len(dataset_records)} total records) to {output_path}")
         logger.info(f"Dataset format: {config.dataset_format}")
         logger.info(f"Saved metadata to {metadata_path}")
+        
+        # Upload to Hugging Face if enabled
+        if self.hf_uploader and config.enable_hf_upload:
+            logger.info("Uploading dataset to Hugging Face Hub...")
+            try:
+                upload_success = self.hf_uploader.upload_dataset(output_path)
+                if upload_success:
+                    logger.info("Successfully uploaded dataset to Hugging Face Hub!")
+                else:
+                    logger.warning("Failed to upload dataset to Hugging Face Hub")
+            except Exception as e:
+                logger.error(f"Error uploading to Hugging Face Hub: {e}")
         
         return output_path
     

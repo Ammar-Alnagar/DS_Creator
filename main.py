@@ -57,6 +57,11 @@ def cli(ctx, log_level):
     • OpenAI Compatible APIs (OpenRouter, etc.)
     • Local Hugging Face Models
     
+    🤗 HUGGING FACE INTEGRATION:
+    • Automatic dataset uploads to Hugging Face Hub
+    • Use 'hf-auth' to test authentication and configure uploads
+    • Use 'hf-upload' to manually upload existing datasets
+    
     Use 'python main.py COMMAND --help' for command-specific help.
     """
     setup_logging(log_level)
@@ -246,6 +251,9 @@ def config_check():
     openai_status = "✅ Configured" if config.openai_api_key else "❌ Not configured"
     status_table.add_row("OpenAI API Key", openai_status)
     
+    hf_status = "✅ Configured" if config.huggingface_api_key else "❌ Not configured"
+    status_table.add_row("Hugging Face API Key", hf_status)
+    
     if config.openai_base_url:
         status_table.add_row("OpenAI Base URL", config.openai_base_url)
     
@@ -406,6 +414,102 @@ def validate(dataset_file):
         console.print(f"[red]Error validating dataset: {e}")
 
 
+@cli.command()
+def hf_auth():
+    """Test Hugging Face authentication and show upload settings."""
+    
+    from src.huggingface_uploader import HuggingFaceUploader
+    
+    console.print("[bold]🤗 Hugging Face Configuration[/bold]\n")
+    
+    # Show current settings
+    settings_table = Table()
+    settings_table.add_column("Setting", style="cyan")
+    settings_table.add_column("Value", style="green")
+    
+    hf_key_status = "✅ Configured" if config.huggingface_api_key else "❌ Not configured"
+    settings_table.add_row("API Key", hf_key_status)
+    settings_table.add_row("Upload Enabled", "✅ Yes" if config.enable_hf_upload else "❌ No")
+    settings_table.add_row("Repository Name", config.hf_repo_name or "❌ Not set")
+    settings_table.add_row("Private Repository", "✅ Yes" if config.hf_dataset_private else "❌ No")
+    settings_table.add_row("Commit Message", config.hf_commit_message)
+    
+    console.print(settings_table)
+    
+    # Test authentication if API key is configured
+    if config.huggingface_api_key:
+        console.print("\n[bold]Testing Authentication...[/bold]")
+        
+        try:
+            uploader = HuggingFaceUploader()
+            if uploader.authenticate():
+                console.print("[green]✅ Authentication successful!")
+            else:
+                console.print("[red]❌ Authentication failed")
+        except Exception as e:
+            console.print(f"[red]❌ Authentication error: {e}")
+    else:
+        console.print("\n[yellow]⚠️  To configure Hugging Face uploads:[/yellow]")
+        console.print("1. Get your API key from: https://huggingface.co/settings/tokens")
+        console.print("2. Add HUGGINGFACE_API_KEY=your_key_here to your .env file")
+        console.print("3. Set HF_REPO_NAME=username/dataset-name in your .env file")
+        console.print("4. Set ENABLE_HF_UPLOAD=true to enable automatic uploads")
+
+
+@cli.command()
+@click.argument('dataset_file', type=click.Path(exists=True))
+@click.option('--repo-name', '-r', help='Hugging Face repository name (username/dataset-name)')
+@click.option('--private', is_flag=True, help='Make the repository private')
+@click.option('--commit-message', '-m', help='Custom commit message')
+def hf_upload(dataset_file, repo_name, private, commit_message):
+    """Upload an existing dataset file to Hugging Face Hub."""
+    
+    from src.huggingface_uploader import HuggingFaceUploader
+    from pathlib import Path
+    
+    console.print(f"[bold]🤗 Uploading dataset to Hugging Face Hub[/bold]\n")
+    
+    dataset_path = Path(dataset_file)
+    
+    try:
+        uploader = HuggingFaceUploader()
+        
+        # Authenticate
+        if not uploader.authenticate():
+            console.print("[red]❌ Failed to authenticate with Hugging Face")
+            return
+        
+        # Use provided parameters or config defaults
+        repo_name = repo_name or config.hf_repo_name
+        private = private if private is not None else config.hf_dataset_private
+        commit_message = commit_message or config.hf_commit_message
+        
+        if not repo_name:
+            console.print("[red]❌ Repository name is required. Use --repo-name or set HF_REPO_NAME in .env")
+            return
+        
+        console.print(f"[yellow]Uploading to: {repo_name}")
+        console.print(f"[yellow]Private: {private}")
+        console.print(f"[yellow]Commit message: {commit_message}")
+        
+        with console.status("[bold green]Uploading dataset..."):
+            success = uploader.upload_dataset(
+                dataset_path=dataset_path,
+                repo_name=repo_name,
+                private=private,
+                commit_message=commit_message
+            )
+        
+        if success:
+            console.print(f"[green]✅ Successfully uploaded dataset!")
+            console.print(f"[green]🔗 View at: https://huggingface.co/datasets/{repo_name}")
+        else:
+            console.print("[red]❌ Upload failed")
+            
+    except Exception as e:
+        console.print(f"[red]❌ Upload error: {e}")
+
+
 def display_results(output_path: Path, stats):
     """Display generation results in a nice format."""
     
@@ -426,6 +530,13 @@ def display_results(output_path: Path, stats):
     results_table.add_row("Models Used", ", ".join(stats.models_used))
     
     console.print(results_table)
+    
+    # Show upload status if enabled
+    if config.enable_hf_upload and config.hf_repo_name:
+        console.print(f"\n[bold green]🤗 Dataset uploaded to Hugging Face:[/bold green]")
+        console.print(f"[green]🔗 https://huggingface.co/datasets/{config.hf_repo_name}")
+    elif config.enable_hf_upload:
+        console.print(f"\n[yellow]⚠️  Hugging Face upload enabled but repository name not set")
     
     # Quick preview
     console.print(f"\n[bold]Dataset saved to:[/bold] {output_path}")
