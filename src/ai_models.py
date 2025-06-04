@@ -90,7 +90,7 @@ class DeepSeekModel(BaseAIModel):
                             "messages": [{"role": "user", "content": "Hello"}],
                             "max_tokens": 10
                         },
-                        timeout=10.0
+                        timeout=60.0
                     )
                     return response.status_code == 200
             
@@ -310,6 +310,12 @@ class OpenAICompatibleModel(BaseAIModel):
         
         if config.openai_organization:
             client_config["organization"] = config.openai_organization
+            
+        # Add explicit timeouts
+        # Connect timeout: time to establish connection
+        # Read timeout: time to wait for server to send response after connection
+        # These can be made configurable in config.py if needed later
+        client_config["timeout"] = httpx.Timeout(60.0, read=120.0) # 60s connect, 120s read
             
         self.client = AsyncOpenAI(**client_config)
         

@@ -48,6 +48,7 @@ class Config(BaseSettings):
     chunk_size: int = Field(2000, env="CHUNK_SIZE")
     chunk_overlap: int = Field(200, env="CHUNK_OVERLAP")
     batch_size: int = Field(10, env="BATCH_SIZE")
+    api_call_delay_seconds: float = Field(0.1, env="API_CALL_DELAY_SECONDS") # Delay between API calls per chunk
     
     # Local Model Settings
     device: str = Field("auto", env="DEVICE")  # auto, cpu, cuda
