@@ -6,10 +6,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 import functools
+import math # Added for time formatting
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn, TimeElapsedColumn
 from rich.table import Table
 from loguru import logger
 
@@ -36,6 +37,33 @@ def run_async_command(func):
     def wrapper(*args, **kwargs):
         return asyncio.run(func(*args, **kwargs))
     return wrapper
+
+
+# New helper function to format time
+def format_time_dhms(seconds: float) -> str:
+    if seconds < 0:
+        return "N/A"
+    if seconds == 0:
+        return "0s"
+
+    days = int(seconds // (24 * 3600))
+    seconds %= (24 * 3600)
+    hours = int(seconds // 3600)
+    seconds %= 3600
+    minutes = int(seconds // 60)
+    seconds %= 60
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if seconds > 0 or not parts: # Show seconds if it's the only unit or non-zero
+        parts.append(f"{math.ceil(seconds)}s") # Ceil seconds for cleaner display
+        
+    return " ".join(parts)
 
 
 @click.group(invoke_without_command=True)
@@ -106,37 +134,66 @@ async def _generate_async(input_dir, output_file, max_conversations, sample, use
     """Generate a medical conversation dataset from PDF files."""
     
     try:
-        # Temporarily override local model setting if requested
         original_use_local = config.use_local_model
         if use_local:
             config.use_local_model = True
         
         generator = MedicalDatasetGenerator()
-        
-        # Convert input_dir to Path if provided
-        input_path = Path(input_dir) if input_dir else None
-        
-        with console.status("[bold green]Generating dataset...") as status:
+        input_path = Path(input_dir) if input_dir else config.input_dir # Ensure input_path is defined for sample case too
+
+        # Setup Rich Progress for detailed ETA and progress
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False # Keep progress visible after completion
+        ) as progress:
+            # Main task for the entire generation process
+            # Total will be updated by MedicalDatasetGenerator for different phases
+            main_generation_task = progress.add_task("Initializing generation...", total=None) 
+
             if sample:
-                console.print("[yellow]Generating sample dataset (50 conversations)...")
-                output_path = await generator.generate_sample_dataset()
+                console.print("[yellow]Generating sample dataset (target: 50 conversations)...[/yellow]")
+                output_path = await generator.generate_sample_dataset(
+                    progress_bar=progress, 
+                    main_task_id=main_generation_task
+                )
             else:
-                console.print("[yellow]Starting full dataset generation...")
+                console.print(f"[yellow]Starting full dataset generation from {input_path}...[/yellow]")
                 output_path = await generator.generate_dataset(
                     input_dir=input_path,
                     output_filename=output_file,
-                    max_conversations=max_conversations
+                    max_conversations=max_conversations,
+                    progress_bar=progress, 
+                    main_task_id=main_generation_task
                 )
         
         # Display results
         stats = generator.get_statistics()
-        display_results(output_path, stats)
-        
-        # Restore original setting
+        if output_path: # Check if output_path was successfully returned
+            display_results(output_path, stats)
+            console.print(f"[green]✅ Dataset generation finished successfully.[/green]")
+        else:
+            # This case might occur if generation was stopped early and _early_exit didn't return a path
+            # or if no chunks were extracted.
+            console.print("[yellow]⚠️ Dataset generation may have been interrupted or did not produce a final dataset file.[/yellow]")
+            # Attempt to log stats if available
+            if generator and hasattr(generator, '_log_generation_stats'):
+                 generator._log_generation_stats()
+
         config.use_local_model = original_use_local
         
+    except ValueError as ve:
+        logger.error(f"Configuration or input error: {ve}")
+        console.print(f"[red]Error: {ve}[/red]")
+        sys.exit(1)
     except Exception as e:
-        console.print(f"[red]Error: {e}")
+        logger.exception("An unexpected error occurred during dataset generation:")
+        console.print(f"[red]An unexpected error occurred: {e}[/red]")
         sys.exit(1)
 
 
@@ -163,50 +220,109 @@ def analyze(input_dir):
         from src.pdf_processor import PDFProcessor
         
         input_path = Path(input_dir) if input_dir else config.input_dir
-        
-        console.print(f"[yellow]Analyzing PDFs in {input_path}...")
-        
-        processor = PDFProcessor()
-        chunks = processor.process_directory(input_path)
-        
-        if not chunks:
-            console.print("[red]No PDF files found or no text could be extracted.")
+
+        pdf_files_to_analyze = list(input_path.glob("*.pdf"))
+        if not pdf_files_to_analyze:
+            console.print(f"[yellow]No PDF files found in {input_path}.[/yellow]")
             return
-        
-        # Create analysis table
-        table = Table(title="PDF Analysis Results")
-        table.add_column("PDF File", style="cyan")
+
+        console.print(f"[yellow]Starting analysis of {len(pdf_files_to_analyze)} PDF(s) in {input_path}...[/yellow]")
+        console.print(f"[dim]Using estimated generation time per chunk: {config.estimated_seconds_per_chunk_generation}s[/dim]")
+
+        processor = PDFProcessor()
+        all_extracted_chunks = {} 
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False 
+        ) as progress:
+            analysis_task = progress.add_task("Preparing analysis...", total=len(pdf_files_to_analyze))
+
+            all_extracted_chunks = processor.process_directory(
+                input_dir=input_path, 
+                pdf_files_list=pdf_files_to_analyze, 
+                progress_bar=progress,
+                task_id=analysis_task
+            )
+
+        if not all_extracted_chunks:
+            console.print("[red]No text could be extracted from any PDF files, or an error occurred during processing.[/red]")
+            return
+
+        console.print("\n[bold]PDF Analysis Results:[/bold]")
+        table = Table(title=None, show_header=True, header_style="bold magenta")
+        table.add_column("PDF File", style="cyan", min_width=20)
         table.add_column("Chunks", justify="right", style="magenta")
         table.add_column("Total Characters", justify="right", style="green")
         table.add_column("Avg Confidence", justify="right", style="yellow")
-        
-        total_chunks = 0
+        table.add_column("Est. Gen. Time (PDF)", justify="right", style="blue") # New column
+
+        total_pdfs_in_table = 0
+        total_chunks_stat = 0
         total_chars = 0
+        total_estimated_pdf_gen_time_seconds = 0.0
         
-        for pdf_name, pdf_chunks in chunks.items():
-            chunk_count = len(pdf_chunks)
-            char_count = sum(len(chunk.content) for chunk in pdf_chunks)
-            avg_confidence = sum(chunk.confidence_score for chunk in pdf_chunks) / chunk_count
+        for pdf_path_key, pdf_content_chunks in all_extracted_chunks.items():
+            pdf_display_name = Path(pdf_path_key).name
             
+            if not pdf_content_chunks: # Case: PDF processed but no chunks extracted (e.g. image-only PDF)
+                chunk_count = 0
+                char_count = 0
+                avg_confidence_str = "N/A"
+                estimated_pdf_time_str = "0s"
+            else:
+                chunk_count = len(pdf_content_chunks)
+                char_count = sum(len(chunk.content) for chunk in pdf_content_chunks)
+                
+                valid_confidence_scores = [
+                    cs for cs in (getattr(chunk, 'confidence_score', 0.0) for chunk in pdf_content_chunks) 
+                    if isinstance(cs, (int, float)) and cs is not None # Added None check
+                ]
+                
+                avg_confidence_str = "N/A"
+                if valid_confidence_scores: # Check if list is not empty
+                    avg_confidence = sum(valid_confidence_scores) / len(valid_confidence_scores)
+                    avg_confidence_str = f"{avg_confidence:.2f}"
+                
+                # Calculate estimated generation time for this PDF
+                estimated_pdf_time_seconds = chunk_count * config.estimated_seconds_per_chunk_generation
+                estimated_pdf_time_str = format_time_dhms(estimated_pdf_time_seconds)
+                total_estimated_pdf_gen_time_seconds += estimated_pdf_time_seconds
+
             table.add_row(
-                pdf_name,
+                pdf_display_name,
                 str(chunk_count),
                 f"{char_count:,}",
-                f"{avg_confidence:.2f}"
+                avg_confidence_str,
+                estimated_pdf_time_str # Add to row
             )
             
-            total_chunks += chunk_count
+            total_pdfs_in_table +=1
+            total_chunks_stat += chunk_count
             total_chars += char_count
         
         console.print(table)
         console.print(f"\n[bold]Summary:[/bold]")
-        console.print(f"Total PDFs: {len(chunks)}")
-        console.print(f"Total chunks: {total_chunks}")
-        console.print(f"Total characters: {total_chars:,}")
-        console.print(f"Estimated conversations: {total_chunks * config.max_conversations_per_chunk}")
+        console.print(f"Total PDFs Displayed in Table: {total_pdfs_in_table}")
+        console.print(f"Total Chunks Extracted: {total_chunks_stat}")
+        console.print(f"Total Characters Extracted: {total_chars:,}")
         
+        # Display Total Estimated Generation Time
+        total_est_gen_time_formatted = format_time_dhms(total_estimated_pdf_gen_time_seconds)
+        console.print(f"Total Estimated Generation Time (for all PDFs): [bold blue]{total_est_gen_time_formatted}[/bold blue]")
+        console.print(f"[dim](Based on {config.estimated_seconds_per_chunk_generation}s/chunk. Adjust 'ESTIMATED_SECONDS_PER_CHUNK_GENERATION' in .env for accuracy.)[/dim]")
+
     except Exception as e:
-        console.print(f"[red]Error: {e}")
+        logger.error(f"Error during PDF analysis: {e}")
+        console.print(f"[red]An error occurred during analysis: {e}[/red]")
+        import traceback
+        logger.debug(traceback.format_exc())
         sys.exit(1)
 
 
@@ -234,6 +350,7 @@ def config_check():
     config_table.add_row("Max Conversations/Chunk", str(config.max_conversations_per_chunk))
     config_table.add_row("Device", config.device)
     config_table.add_row("Load in 8-bit", str(config.load_in_8bit))
+    config_table.add_row("Est. Secs/Chunk (Analysis)", f"{config.estimated_seconds_per_chunk_generation}s") # Added to config_check
     
     console.print(config_table)
     
@@ -525,10 +642,20 @@ def display_results(output_path: Path, stats):
     results_table.add_row("PDFs Processed", str(stats.total_pdfs_processed))
     results_table.add_row("Text Chunks", str(stats.total_chunks_extracted))
     results_table.add_row("Conversations Generated", str(stats.total_conversations_generated))
-    results_table.add_row("Success Rate", f"{(stats.successful_generations / stats.total_chunks_extracted * 100):.1f}%")
-    results_table.add_row("Average Quality Score", f"{stats.average_confidence_score:.2f}")
-    results_table.add_row("Processing Time", f"{stats.processing_time_seconds:.1f}s")
-    results_table.add_row("Models Used", ", ".join(stats.models_used))
+    # Ensure total_chunks_extracted is not zero before division for success rate
+    success_rate_str = "N/A"
+    if stats.total_chunks_extracted > 0 and hasattr(stats, 'successful_generations'):
+        success_rate = (stats.successful_generations / stats.total_chunks_extracted * 100)
+        success_rate_str = f"{success_rate:.1f}% (chunk-level)"
+    results_table.add_row("Chunk Gen. Success Rate", success_rate_str)
+
+    avg_score_str = "N/A"
+    if stats.total_conversations_generated > 0 and hasattr(stats, 'average_confidence_score'):
+        avg_score_str = f"{stats.average_confidence_score:.2f}"
+    results_table.add_row("Average Quality Score", avg_score_str)
+    
+    results_table.add_row("Processing Time", format_time_dhms(stats.processing_time_seconds)) # Use new formatter
+    results_table.add_row("Models Used", ", ".join(stats.models_used) if stats.models_used else "N/A") # Handle empty list
     
     console.print(results_table)
     

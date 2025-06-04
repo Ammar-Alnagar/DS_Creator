@@ -37,7 +37,10 @@ class Config(BaseSettings):
     enable_hf_upload: bool = Field(False, env="ENABLE_HF_UPLOAD")
     hf_repo_name: Optional[str] = Field(None, env="HF_REPO_NAME")  # Optional - auto-generated from filename if not set
     hf_dataset_private: bool = Field(False, env="HF_DATASET_PRIVATE")
-    hf_commit_message: str = Field("Upload medical conversation dataset", env="HF_COMMIT_MESSAGE")
+    hf_commit_message: str = Field("Update dataset with new conversations", env="HF_COMMIT_MESSAGE")
+    
+    # NEW: Estimation setting for 'analyze' command
+    estimated_seconds_per_chunk_generation: float = 10.0 # Default: 10 seconds per chunk
     
     # Generation Settings
     max_conversations_per_chunk: int = Field(5, env="MAX_CONVERSATIONS_PER_CHUNK")
@@ -83,6 +86,12 @@ class Config(BaseSettings):
         if isinstance(v, str):
             return v.split('#')[0].strip()
         return v
+    
+    @validator("input_dir", "output_dir", "models_cache_dir", pre=True)
+    def _resolve_path(cls, value: Optional[str]) -> Optional[Path]:
+        if isinstance(value, str):
+            return Path(value)
+        return value
     
     class Config:
         env_file = ".env"

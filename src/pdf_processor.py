@@ -2,13 +2,14 @@
 
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 
 import fitz  # PyMuPDF
 import pdfplumber
 from PyPDF2 import PdfReader
 from loguru import logger
+from rich.progress import Progress
 
 from config import config
 
@@ -240,24 +241,59 @@ class PDFProcessor:
         
         return True
     
-    def process_directory(self, input_dir: Path) -> Dict[str, List[TextChunk]]:
-        """Process all PDF files in a directory."""
-        pdf_files = list(input_dir.glob("*.pdf"))
+    def process_directory(
+        self, 
+        input_dir: Path, 
+        pdf_files_list: Optional[List[Path]] = None,
+        progress_bar: Optional[Progress] = None,
+        task_id: Optional[Any] = None
+    ) -> Dict[str, List[TextChunk]]:
+        """Process all PDF files in a directory or a given list."""
         
-        if not pdf_files:
-            logger.warning(f"No PDF files found in {input_dir}")
+        files_to_process = pdf_files_list
+        if files_to_process is None:
+            logger.info(f"No pre-defined file list, scanning directory: {input_dir}")
+            files_to_process = list(input_dir.glob("*.pdf"))
+
+        if not files_to_process:
+            logger.warning(f"No PDF files found in {input_dir} or provided list.")
+            if progress_bar and task_id:
+                # Ensure task_id is valid before trying to access task attributes
+                found_task = next((t for t in progress_bar.tasks if t.id == task_id), None)
+                if found_task:
+                    progress_bar.update(task_id, completed=found_task.total, description="No PDF files found.")
             return {}
+
+        all_chunks: Dict[str, List[TextChunk]] = {}
         
-        results = {}
-        
-        for pdf_file in pdf_files:
-            logger.info(f"Processing {pdf_file.name}")
-            chunks = self.extract_text_from_pdf(pdf_file)
+        num_files = len(files_to_process)
+        logger.info(f"Starting processing of {num_files} PDF file(s).")
+
+        for i, pdf_path in enumerate(files_to_process):
+            pdf_name = pdf_path.name 
+            if progress_bar and task_id:
+                progress_bar.update(task_id, description=f"Processing ({i+1}/{num_files}): {pdf_name}")
+
+            try:
+                extracted_chunks = self.extract_text_from_pdf(pdf_path)
+                all_chunks[str(pdf_path)] = extracted_chunks
+                logger.debug(f"Successfully processed {pdf_name}, extracted {len(extracted_chunks)} chunks.")
+            except Exception as e:
+                logger.error(f"Failed to process {pdf_name}: {e}")
+                all_chunks[str(pdf_path)] = [] 
             
-            if chunks:
-                results[pdf_file.name] = chunks
-                logger.info(f"Extracted {len(chunks)} chunks from {pdf_file.name}")
-            else:
-                logger.error(f"Failed to extract text from {pdf_file.name}")
+            if progress_bar and task_id:
+                progress_bar.advance(task_id)
         
-        return results 
+        if progress_bar and task_id:
+            found_task = next((t for t in progress_bar.tasks if t.id == task_id), None)
+            if found_task:
+                final_description = f"Analyzed {found_task.completed}/{found_task.total} PDF(s)"
+                if found_task.completed != num_files: # Should ideally not happen if logic is correct
+                    final_description += " (some files may have failed)"
+                progress_bar.update(task_id, description=final_description)
+            else:
+                logger.warning(f"Task ID {task_id} not found in progress bar for final update.")
+
+        logger.info(f"Finished processing all {num_files} PDF file(s).")
+        return all_chunks 

@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 
 from loguru import logger
-from tqdm import tqdm
+from rich.progress import Progress
 
 from config import config
 from src.pdf_processor import PDFProcessor, TextChunk
@@ -97,7 +97,9 @@ class MedicalDatasetGenerator:
         input_dir: Optional[Path] = None,
         output_filename: Optional[str] = None,
         max_conversations: Optional[int] = None,
-        hf_repo_name: Optional[str] = None
+        hf_repo_name: Optional[str] = None,
+        progress_bar: Optional[Progress] = None,
+        main_task_id: Optional[Any] = None
     ) -> Path:
         """
         Generate a complete medical conversation dataset from PDFs.
@@ -107,6 +109,8 @@ class MedicalDatasetGenerator:
             output_filename: Name for output file (auto-generated if None)
             max_conversations: Maximum number of conversations to generate
             hf_repo_name: Name of the Hugging Face repository to upload the dataset to
+            progress_bar: Rich progress bar for tracking progress
+            main_task_id: ID of the main task in the progress bar
             
         Returns:
             Path to the generated dataset file
@@ -120,81 +124,140 @@ class MedicalDatasetGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_filename = f"medical_conversations_{timestamp}.json"
         
-        # Process PDFs and extract text chunks
+        # --- PDF Processing Stage ---
         logger.info(f"Processing PDFs from {input_dir}")
-        pdf_chunks = self.pdf_processor.process_directory(input_dir)
         
+        pdf_files_to_process = list(input_dir.glob("*.pdf"))
+        if not pdf_files_to_process:
+            raise ValueError(f"No PDF files found in {input_dir}")
+
+        pdf_processing_sub_task_id = None
+        if progress_bar:
+            pdf_processing_sub_task_id = progress_bar.add_task(
+                f"Extracting text from {len(pdf_files_to_process)} PDF(s)...", 
+                total=len(pdf_files_to_process)
+            )
+            if main_task_id:
+                 progress_bar.update(main_task_id, description="Phase 1: PDF Processing")
+
+
+        pdf_chunks = self.pdf_processor.process_directory(
+            input_dir,
+            pdf_files_list=pdf_files_to_process,
+            progress_bar=progress_bar,
+            task_id=pdf_processing_sub_task_id
+        )
+        
+        if progress_bar and pdf_processing_sub_task_id:
+            completed_count = progress_bar.tasks[progress_bar.task_ids.index(pdf_processing_sub_task_id)].completed
+            total_count = progress_bar.tasks[progress_bar.task_ids.index(pdf_processing_sub_task_id)].total
+            progress_bar.update(pdf_processing_sub_task_id, 
+                                description=f"Processed {completed_count}/{total_count} PDFs.",
+                                completed=total_count)
+
         if not pdf_chunks:
-            raise ValueError(f"No usable text extracted from PDFs in {input_dir}")
-        
+            processed_pdf_count = sum(1 for _ in pdf_chunks.values() if _) 
+            if processed_pdf_count == 0:
+                 raise ValueError(f"No usable text extracted from any PDFs in {input_dir}")
+
         # Update stats
         self.stats.total_pdfs_processed = len(pdf_chunks)
         self.stats.total_chunks_extracted = sum(len(chunks) for chunks in pdf_chunks.values())
         self.stats.models_used = self.ai_manager.get_available_models()
         
         logger.info(f"Extracted {self.stats.total_chunks_extracted} chunks from {self.stats.total_pdfs_processed} PDFs")
-        
-        # Generate conversations from chunks
-        all_conversations = []
-        total_chunks = sum(len(chunks) for chunks in pdf_chunks.values())
-        
-        with tqdm(total=total_chunks, desc="Generating conversations") as pbar:
-            for pdf_name, chunks in pdf_chunks.items():
-                logger.info(f"Processing chunks from {pdf_name}")
-                
-                if self.stop_event and self.stop_event.is_set():
-                    logger.info("Stop requested during PDF processing, halting generation.")
-                    return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
 
-                for chunk in chunks:
-                    if self.stop_event and self.stop_event.is_set():
-                        logger.info("Stop requested during chunk processing, halting generation.")
-                        return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
-                    try:
-                        # Generate conversations for this chunk
-                        conversations = await self.ai_manager.generate_conversations(
-                            chunk.content, 
-                            config.max_conversations_per_chunk
-                        )
-                        
-                        if conversations:
-                            # Filter and process conversations
-                            processed_conversations = self._process_conversations(
-                                conversations, chunk, pdf_name
-                            )
-                            all_conversations.extend(processed_conversations)
-                            self.stats.successful_generations += 1
-                        else:
-                            self.stats.failed_generations += 1
-                            logger.warning(f"No conversations generated for chunk {chunk.chunk_index}")
-                        
-                        pbar.update(1)
-                        
-                        # Check if we've reached the maximum
-                        if max_conversations and len(all_conversations) >= max_conversations:
-                            logger.info(f"Reached maximum conversations limit: {max_conversations}")
-                            all_conversations = all_conversations[:max_conversations]
-                            break
-                        
-                        # Add delay to respect API rate limits
-                        await asyncio.sleep(0.1)
-                        if self.stop_event and self.stop_event.is_set():
-                            logger.info("Stop requested after API call/delay, halting generation.")
-                            return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing chunk {chunk.chunk_index}: {e}")
-                        self.stats.failed_generations += 1
-                        pbar.update(1)
-                        continue
-                
-                if max_conversations and len(all_conversations) >= max_conversations:
-                    break
-                
-                if self.stop_event and self.stop_event.is_set():
-                    logger.info("Stop requested after PDF processing, halting generation.")
-                    return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
+        if self.stats.total_chunks_extracted == 0:
+            logger.warning("No chunks were extracted. Cannot proceed with conversation generation.")
+            output_path = await self._save_dataset([], output_filename, hf_repo_name)
+            self._log_generation_stats()
+            return output_path
         
+        # --- Conversation Generation Stage ---
+        all_conversations = []
+        
+        if progress_bar and main_task_id:
+            progress_bar.update(main_task_id, 
+                                total=self.stats.total_chunks_extracted, 
+                                completed=0, 
+                                description=f"Phase 2: Generating Conversations (0/{self.stats.total_chunks_extracted} chunks)")
+
+        processed_chunk_count = 0
+        for pdf_name, chunks in pdf_chunks.items():
+            pdf_file_name_only = Path(pdf_name).name
+            logger.info(f"Processing {len(chunks)} chunks from {pdf_file_name_only}")
+            
+            if self.stop_event and self.stop_event.is_set():
+                logger.info("Stop requested during PDF processing, halting generation.")
+                return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
+
+            for chunk_idx, chunk in enumerate(chunks):
+                if self.stop_event and self.stop_event.is_set():
+                    logger.info("Stop requested during chunk processing, halting generation.")
+                    return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
+                
+                if progress_bar and main_task_id:
+                    progress_bar.update(main_task_id, 
+                                        description=f"AI: {pdf_file_name_only} ({chunk_idx+1}/{len(chunks)}) | Overall ({processed_chunk_count}/{self.stats.total_chunks_extracted})")
+                try:
+                    # Generate conversations for this chunk
+                    current_chunk_conversations = await self.ai_manager.generate_conversations(
+                        chunk.content, 
+                        config.max_conversations_per_chunk
+                    )
+                    
+                    if current_chunk_conversations:
+                        # Filter and process conversations
+                        processed_conversations = self._process_conversations(
+                            current_chunk_conversations, chunk, pdf_file_name_only
+                        )
+                        all_conversations.extend(processed_conversations)
+                        self.stats.successful_generations += 1
+                    else:
+                        self.stats.failed_generations += 1
+                        logger.warning(f"No conversations generated for chunk {chunk.chunk_index} from {pdf_file_name_only}")
+                    
+                    processed_chunk_count +=1
+                    if progress_bar and main_task_id:
+                        progress_bar.advance(main_task_id)
+                    
+                    # Check if we've reached the maximum
+                    if max_conversations and len(all_conversations) >= max_conversations:
+                        logger.info(f"Reached maximum conversations limit: {max_conversations}")
+                        all_conversations = all_conversations[:max_conversations]
+                        if progress_bar and main_task_id:
+                            current_task = next((t for t in progress_bar.tasks if t.id == main_task_id), None)
+                            if current_task:
+                                progress_bar.update(main_task_id, 
+                                                    completed=current_task.total, 
+                                                    description=f"Reached max conversations. Processed {processed_chunk_count}/{self.stats.total_chunks_extracted} chunks.")
+                        break 
+                    
+                    # Add delay to respect API rate limits
+                    await asyncio.sleep(config.api_request_delay)
+                    if self.stop_event and self.stop_event.is_set():
+                        logger.info("Stop requested after API call/delay, halting generation.")
+                        return await self._early_exit(all_conversations, output_filename, start_time, hf_repo_name)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing chunk {chunk.chunk_index} from {pdf_file_name_only}: {e}")
+                    self.stats.failed_generations += 1
+                    processed_chunk_count +=1
+                    if progress_bar and main_task_id:
+                        progress_bar.advance(main_task_id)
+                    continue
+            
+            if max_conversations and len(all_conversations) >= max_conversations:
+                break 
+        
+        # Final update to main task description after loop, if not hit max_conversations
+        if progress_bar and main_task_id:
+            current_task = next((t for t in progress_bar.tasks if t.id == main_task_id), None)
+            if current_task and current_task.completed < current_task.total:
+                 progress_bar.update(main_task_id, description=f"Phase 2: Completed Generation ({current_task.completed}/{current_task.total} chunks)")
+            elif current_task and current_task.completed == current_task.total:
+                 progress_bar.update(main_task_id, description=f"Phase 2: All {current_task.total} chunks processed.")
+
         # Update final stats
         self.stats.total_conversations_generated = len(all_conversations)
         if all_conversations:
@@ -386,29 +449,38 @@ class MedicalDatasetGenerator:
         return output_path
     
     def _log_generation_stats(self):
-        """Log comprehensive statistics about the generation process."""
+        logger.info("--- Generation Statistics ---")
+        logger.info(f"Total PDFs Processed: {self.stats.total_pdfs_processed}")
+        logger.info(f"Total Chunks Extracted: {self.stats.total_chunks_extracted}")
+        successful_chunk_generations = self.stats.successful_generations 
+        logger.info(f"Chunks with Successful Conversation Generations: {successful_chunk_generations}")
+        logger.info(f"Chunks with Failed/Empty Conversation Generations: {self.stats.failed_generations}")
+        logger.info(f"Total Conversation Pairs Generated: {self.stats.total_conversations_generated}")
         
-        logger.info("=== DATASET GENERATION STATISTICS ===")
-        logger.info(f"PDFs processed: {self.stats.total_pdfs_processed}")
-        logger.info(f"Text chunks extracted: {self.stats.total_chunks_extracted}")
-        logger.info(f"Conversations generated: {self.stats.total_conversations_generated}")
-        logger.info(f"Successful generations: {self.stats.successful_generations}")
-        logger.info(f"Failed generations: {self.stats.failed_generations}")
-        logger.info(f"Average confidence score: {self.stats.average_confidence_score:.2f}")
-        logger.info(f"Processing time: {self.stats.processing_time_seconds:.1f} seconds")
-        logger.info(f"Models used: {', '.join(self.stats.models_used)}")
-        
-        if self.stats.total_chunks_extracted > 0:
-            success_rate = (self.stats.successful_generations / self.stats.total_chunks_extracted) * 100
-            logger.info(f"Generation success rate: {success_rate:.1f}%")
-        
-        logger.info("=====================================")
+        if self.stats.total_chunks_extracted > 0 :
+            success_rate = (successful_chunk_generations / self.stats.total_chunks_extracted) * 100
+            logger.info(f"Chunk-level Generation Success Rate: {success_rate:.2f}%")
+
+        avg_score = self.stats.average_confidence_score if self.stats.total_conversations_generated > 0 else 0.0
+        logger.info(f"Average Quality Score (of generated pairs): {avg_score:.2f}")
+        logger.info(f"Processing Time: {self.stats.processing_time_seconds:.2f} seconds")
+        logger.info(f"Models Used: {', '.join(self.stats.models_used) if self.stats.models_used else 'N/A'}")
+        logger.info("-----------------------------")
     
-    async def generate_sample_dataset(self, num_samples: int = 50, hf_repo_name: Optional[str] = None) -> Path:
-        """Generate a small sample dataset for testing."""
-        logger.info(f"Generating sample dataset with {num_samples} conversations")
-        # The stop_event set by TUI will be used by generate_dataset
-        return await self.generate_dataset(max_conversations=num_samples, hf_repo_name=hf_repo_name)
+    async def generate_sample_dataset(self, 
+                                      num_samples: int = 50, 
+                                      hf_repo_name: Optional[str] = None,
+                                      progress_bar: Optional[Progress] = None,
+                                      main_task_id: Optional[Any] = None
+                                      ) -> Path:
+        """Generate a small sample dataset (fixed number of conversations)."""
+        # This will now also use the progress bar if provided
+        return await self.generate_dataset(
+            max_conversations=num_samples,
+            hf_repo_name=hf_repo_name,
+            progress_bar=progress_bar,
+            main_task_id=main_task_id
+        )
     
     def get_statistics(self) -> GenerationStats:
         """Get current generation statistics."""
