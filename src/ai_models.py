@@ -770,7 +770,8 @@ class HuggingFaceLocalModel(BaseAIModel):
                 # Generate user message
                 user_prompt = self._get_user_generation_prompt(medical_text, i)
                 
-                if self.stop_event and self.stop_event.is_set(): break
+                if self.stop_event and self.stop_event.is_set():
+                    break
                 user_message_raw = await asyncio.to_thread(
                     self.pipeline, 
                     user_prompt, 
@@ -780,12 +781,14 @@ class HuggingFaceLocalModel(BaseAIModel):
                 )
                 user_message = self._clean_generated_text(user_message_raw[0]['generated_text'])
 
-                if not user_message: continue
+                if not user_message:
+                    continue
 
                 # Generate assistant response
                 assistant_prompt = self._get_assistant_generation_prompt(medical_text, user_message)
                 
-                if self.stop_event and self.stop_event.is_set(): break
+                if self.stop_event and self.stop_event.is_set():
+                    break
                 assistant_message_raw = await asyncio.to_thread(
                     self.pipeline, 
                     assistant_prompt, 
@@ -795,7 +798,8 @@ class HuggingFaceLocalModel(BaseAIModel):
                 )
                 assistant_message = self._clean_generated_text(assistant_message_raw[0]['generated_text'])
 
-                if not assistant_message: continue
+                if not assistant_message:
+                    continue
                 
                 # Create ConversationPair
                 pair = ConversationPair(
