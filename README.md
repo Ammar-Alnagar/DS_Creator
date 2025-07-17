@@ -1306,3 +1306,26 @@ black src/ && isort src/ && flake8 src/ && pytest
    API_PROVIDER=deepseek python main.py config-check
    USE_LOCAL_MODEL=true python main.py config-check
    ```
+
+## 🚀 New Features & Enhancements
+
+### **Parallel PDF Processing**
+The new `parallel_pdf_processor.py` script allows for concurrent processing of multiple PDF files, significantly speeding up the dataset generation workflow. This is especially useful for large collections of documents.
+
+### **Enhanced Error Handling**
+The error handling has been improved across the application to provide more informative messages and prevent crashes. This includes:
+- Graceful handling of missing API keys.
+- Better error messages for configuration issues.
+- Robust handling of failed PDF text extraction.
+
+### **Comprehensive Testing**
+The project now includes a suite of unit tests to ensure the reliability and stability of the codebase. This includes tests for:
+- PDF processing and text extraction.
+- AI model interactions and data generation.
+- Dataset creation and formatting.
+
+### **Improved Code Quality**
+The codebase has been refactored to follow best practices, including:
+- Consistent code style and formatting.
+- Improved modularity and separation of concerns.
+- Enhanced documentation and comments.

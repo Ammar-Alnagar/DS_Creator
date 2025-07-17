@@ -123,7 +123,7 @@ class HuggingFaceUploader:
             clean_name = clean_name.strip('-')
             
             # Generate repo name with username
-            username = "Daemontatox"
+            username = self.api.whoami()["name"]
             repo_name = f"{username}/{clean_name}"
             logger.info(f"Auto-generated repository name: {repo_name}")
         
